@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# start_comfy_ui — launch ComfyUI tuned for AMD Strix Halo (gfx1151).
+#
+# Provided as a real executable on PATH (not only a shell alias) so it works in
+# both interactive shells and non-interactive ones, e.g.:
+#   distrobox enter comfyui-strixhalo -- start_comfy_ui
+#
+# Flags are the Strix-Halo-critical set:
+#   --disable-mmap        memory-mapping >64GB is very slow on gfx1151
+#   --cache-none          aggressively manage unified memory
+#   --bf16-vae            avoid OOM during VAE decode
+#   --gpu-only --disable-smart-memory   keep tensors on the iGPU
+#
+# Any extra arguments are passed straight through to ComfyUI's main.py.
+set -euo pipefail
+
+COMFY_DIR="${COMFY_DIR:-/opt/ComfyUI}"
+PORT="${COMFY_PORT:-8000}"
+OUTPUT_DIR="${COMFY_OUTPUT_DIR:-$HOME/comfy-outputs}"
+
+mkdir -p "$OUTPUT_DIR"
+cd "$COMFY_DIR"
+
+exec python main.py \
+    --port "$PORT" \
+    --output-directory "$OUTPUT_DIR" \
+    --disable-mmap \
+    --gpu-only \
+    --disable-smart-memory \
+    --cache-none \
+    --bf16-vae \
+    "$@"

@@ -44,6 +44,14 @@ COPY scripts/collect_perf_logs.py /opt/
 COPY scripts/model_manager.py /opt/
 COPY workflows/API /opt/comfy-workflows
 
+# Expose user-facing commands on PATH (/opt/venv/bin is on PATH).
+#   start_comfy_ui : real executable (works in non-interactive shells too,
+#                    e.g. `distrobox enter comfyui-strixhalo -- start_comfy_ui`)
+#   model_manager  : thin wrapper around /opt/model_manager.py
+COPY scripts/start_comfy_ui /opt/venv/bin/start_comfy_ui
+RUN printf '#!/usr/bin/env bash\nexec python /opt/model_manager.py "$@"\n' > /opt/venv/bin/model_manager \
+    && chmod 0755 /opt/venv/bin/start_comfy_ui /opt/venv/bin/model_manager
+
 
 # ROCm + PyTorch (TheRock, include torchaudio for resolver; remove later)
 RUN python -m pip install \

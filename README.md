@@ -21,10 +21,11 @@ outputs live in your home directory and persist across rebuilds.
 - **`Dockerfile`** — `ubuntu:26.04` base, ROCm nightlies (TheRock, gfx1151) +
   PyTorch, ComfyUI with `ComfyUI_essentials`, `ComfyUI-AMDGPUMonitor`,
   `ComfyUI-GGUF`, plus Qwen Image Studio and Wan Video Studio.
-- **`scripts/`** — `model_manager` (TUI weight downloader), `set_extra_paths.sh`,
-  per-model fetchers (`get_qwen_image.sh`, `get_wan22.sh`, `get_hunyuan15.sh`,
-  `get_ltx2.sh`), ROCm env vars, a login banner, and the `start_comfy_ui` alias
-  with the Strix-Halo-critical flags
+- **`scripts/`** — `model_manager` and `start_comfy_ui` (both installed as real
+  commands on PATH, so they work in interactive *and* non-interactive shells),
+  `set_extra_paths.sh`, per-model fetchers (`get_qwen_image.sh`, `get_wan22.sh`,
+  `get_hunyuan15.sh`, `get_ltx2.sh`), ROCm env vars, and a login banner.
+  `start_comfy_ui` carries the Strix-Halo-critical flags
   (`--disable-mmap --cache-none --bf16-vae --gpu-only --disable-smart-memory`).
 - **`workflows/`** — ready-to-load ComfyUI workflows for Qwen Image / Edit,
   Wan 2.2, HunyuanVideo 1.5, and LTX2.

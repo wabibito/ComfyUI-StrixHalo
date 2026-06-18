@@ -86,5 +86,5 @@ printf '  - %-16s → %s\n' "ComfyUI"            "start_comfy_ui (http://localho
 echo
 printf 'SSH tip: ssh -L 8000:localhost:8000 user@host\n\n'
 
-# Aliases
-alias start_comfy_ui='cd /opt/ComfyUI && python main.py --port 8000 --output-directory $HOME/comfy-outputs --disable-mmap --gpu-only --disable-smart-memory --cache-none --bf16-vae'
+# start_comfy_ui is a real executable on PATH (/opt/venv/bin/start_comfy_ui);
+# no alias needed. Defining one here would only work in interactive shells.
