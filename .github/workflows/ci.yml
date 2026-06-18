@@ -17,7 +17,7 @@ jobs:
     name: Lint shell scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: bash -n syntax check (our scripts only, not vendored)
         run: |
@@ -39,7 +39,7 @@ jobs:
     name: Dockerfile lint (informational)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: hadolint
         uses: hadolint/hadolint-action@v3.1.0
         with:
@@ -53,7 +53,7 @@ jobs:
     name: Build Ubuntu base + vendored layers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Vendor build-time sources
         run: ./vendor.sh
