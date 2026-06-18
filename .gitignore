@@ -13,6 +13,9 @@ __pycache__/
 .venv/
 venv/
 
+# Local-only Claude Code context (kept on disk, not published)
+CLAUDE.md
+
 # Editor / OS noise
 .DS_Store
 *.swp
