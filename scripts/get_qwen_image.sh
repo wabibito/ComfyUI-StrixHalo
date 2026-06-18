@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # /opt/get_qwen.sh (resume-friendly, supports Qwen Image + Qwen Image Edit)
 set -euo pipefail
 

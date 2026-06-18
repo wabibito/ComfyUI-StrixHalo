@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # host-setup-ubuntu.sh
 # One-time Ubuntu 26.04 (Resolute) host bootstrap for the AMD Strix Halo ComfyUI

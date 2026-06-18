@@ -1,0 +1,36 @@
+# Keep the build context lean. The Dockerfile only needs: the scripts it COPYs,
+# the workflows, and vendor/. Everything below is irrelevant to the image and
+# would only bloat the context sent to podman/docker on every build.
+
+.git
+.gitignore
+.dockerignore
+.editorconfig
+
+# Docs / meta — not needed inside the image
+README.md
+NOTICE.md
+CONTRIBUTING.md
+SECURITY.md
+CODE_OF_CONDUCT.md
+CHANGELOG.md
+.github/
+
+# Host-side scripts run on the Ubuntu host, never inside the image
+host-setup-ubuntu.sh
+setup-kernel-ubuntu.sh
+build-image.sh
+refresh-distrobox.sh
+vendor.sh
+
+# Local runtime data (should never exist here, but guard anyway)
+comfy-models/
+comfy-outputs/
+*.bak.*
+
+# Vendored VCS metadata + provenance (the source itself is kept; .git is already
+# stripped by vendor.sh, this is belt-and-suspenders)
+vendor/**/.git
+vendor/**/.github
+**/__pycache__/
+*.py[cod]

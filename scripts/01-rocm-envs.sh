@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Detect and export ROCm toolchain paths from the _rocm_sdk_core package
 
 # Enable AOTriton for torch

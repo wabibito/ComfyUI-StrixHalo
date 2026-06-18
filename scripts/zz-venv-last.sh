@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Ensure /opt/venv/bin is first even if ~/.local/bin or ~/.cargo/bin prepend themselves via user dotfiles.
 
 _venv_path_fix() {

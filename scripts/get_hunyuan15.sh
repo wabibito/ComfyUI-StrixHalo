@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # /opt/get_hunyuan15.sh (resume-friendly)
 # Downloads models for ComfyUI HunyuanVideo 1.5 (T2V & I2V)
 set -euo pipefail

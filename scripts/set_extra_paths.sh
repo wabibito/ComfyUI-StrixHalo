@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # setup_extra_paths.sh
 
 set -euo pipefail

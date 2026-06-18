@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # vendor.sh
 # Clone every build-time source dependency into ./vendor/ so the image builds

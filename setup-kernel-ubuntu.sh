@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # setup-kernel-ubuntu.sh
 # Guided editor for the Strix Halo unified-memory kernel parameters on Ubuntu.

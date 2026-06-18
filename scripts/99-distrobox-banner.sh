@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Lightweight banner with machine/GPU and ROCm nightly version
 
 # Load ROCm env quietly if present

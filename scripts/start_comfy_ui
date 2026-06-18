@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # start_comfy_ui — launch ComfyUI tuned for AMD Strix Halo (gfx1151).
 #
 # Provided as a real executable on PATH (not only a shell alias) so it works in

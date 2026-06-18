@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # /opt/get_wan22.sh  (resume-friendly)
 set -euo pipefail
 
