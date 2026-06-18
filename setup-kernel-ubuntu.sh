@@ -8,9 +8,8 @@
 #     amdgpu.gttsize=<MiB>        (GTT window — how much system RAM the iGPU may use)
 #     ttm.pages_limit=<pages>     (TTM page pool cap; pages = gttsize_MiB * 256)
 #
-# Equivalent to the Fedora project's GRUB_CMDLINE_LINUX edit, adapted for Ubuntu's
-# GRUB_CMDLINE_LINUX_DEFAULT, with a backup, a dry-run preview, and a size chosen
-# from your installed RAM. You apply by rebooting after the script finishes.
+# Edits Ubuntu's GRUB_CMDLINE_LINUX_DEFAULT, with a backup, a dry-run preview, and
+# a size chosen from your installed RAM. You apply by rebooting after it finishes.
 #
 # Usage:
 #   ./setup-kernel-ubuntu.sh                 # auto-size from RAM, interactive confirm
@@ -56,7 +55,7 @@ if [[ -n "$FORCE_GTT_GIB" ]]; then
     gtt_gib="$FORCE_GTT_GIB"
     log "Using forced GTT size: ${gtt_gib} GiB"
 else
-    # Reserve 4 GiB for the OS, like the upstream Fedora 128 GiB → 124 GiB default.
+    # Reserve 4 GiB for the OS (e.g. 128 GiB RAM → 124 GiB GTT window).
     gtt_gib=$(( total_gib - 4 ))
     (( gtt_gib < 8 )) && gtt_gib=8
     log "Auto-sized GTT: ${gtt_gib} GiB (reserving 4 GiB for the OS)."

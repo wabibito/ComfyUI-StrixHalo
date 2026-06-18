@@ -74,14 +74,13 @@ cat <<'ASCII'
 
 ASCII
 echo
-printf 'AMD Ryzen AI Max “Strix Halo” — Image & Video Toolbox (gfx1151, ROCm via TheRock)\n'
+printf 'AMD Ryzen AI Max “Strix Halo” — ComfyUI Image & Video (gfx1151, ROCm via TheRock)\n'
 [[ -n "$ROCM_VER" ]] && printf 'ROCm nightly: %s\n' "$ROCM_VER"
 echo
 printf 'Machine: %s\n' "$MACHINE"
 printf 'GPU    : %s\n\n' "$GPU"
-printf 'Repo   : https://github.com/kyuz0/amd-strix-halo-comfyui-toolboxes\n'
 printf 'Image  : localhost/comfyui-strixhalo:latest (built locally on Ubuntu)\n'
-printf 'Host   : Ubuntu + distrobox + rootless podman\n\n'
+printf 'Host   : Ubuntu 26.04 + distrobox + rootless podman\n\n'
 printf 'Included:\n'
 printf '  - %-16s → %s\n' "ComfyUI"            "start_comfy_ui (http://localhost:8000)"
 echo

@@ -1,48 +1,42 @@
-# ComfyUI-StrixHalo — Ubuntu 26.04 (distrobox edition)
+# ComfyUI-StrixHalo
 
-An Ubuntu port of [kyuz0/amd-strix-halo-comfyui-toolboxes](https://github.com/kyuz0/amd-strix-halo-comfyui-toolboxes)
-with the **exact same container, ComfyUI stack, workflows, and launch flags** —
-but set up to run on **Ubuntu 26.04 (Resolute Raccoon)** using **distrobox +
-rootless Podman** instead of Fedora's `toolbox`.
+Run **ComfyUI** for image & video generation on the **AMD Ryzen AI Max "Strix
+Halo"** iGPU (gfx1151, Radeon 8060S) under **Ubuntu 26.04**, in a self-contained
+**distrobox** container built on top of **rootless Podman**.
 
-> Ubuntu doesn't ship `toolbox`. It ships `distrobox`, which manages OCI
-> containers on the host. Here the image itself is rebuilt on an **Ubuntu 26.04
-> base** (the upstream image was Fedora). The ROCm/PyTorch/ComfyUI stack and all
-> the launch flags are unchanged — only the base OS layer and the host-side
-> plumbing (packages, GPU groups, kernel params) differ.
->
-> One subtlety: Ubuntu 26.04's default Python is 3.14, but TheRock's gfx1151
-> torch wheels target the 3.13 ABI — so the Dockerfile installs Python 3.13 from
-> the deadsnakes PPA and builds the venv from it. (See the Dockerfile header.)
+Targets machines like the Framework Desktop / Ryzen AI MAX+ 395 with 96–128 GB
+unified memory. Everything — ROCm, PyTorch, ComfyUI, the plugins, and the tuned
+launch flags — is baked into a single locally-built image; your models and
+outputs live in your home directory and persist across rebuilds.
 
-Targets the **AMD Ryzen AI Max "Strix Halo"** iGPU (gfx1151, Radeon 8060S),
-e.g. the Framework Desktop / Ryzen AI MAX+ 395 with 96–128 GB unified memory.
+> **Why distrobox?** Ubuntu doesn't ship Fedora's `toolbox`. `distrobox` is the
+> Ubuntu-native equivalent — it runs an OCI image as a tightly host-integrated
+> container (shared `$HOME`, GPU passthrough), which is exactly what we need to
+> expose `/dev/kfd` and `/dev/dri` to ROCm.
 
 ---
 
-## What's the same as upstream
+## What's in the box
 
-- The **`Dockerfile`** installs the same stack as upstream (ROCm nightlies via
-  TheRock for gfx1151, PyTorch, ComfyUI + plugins, Qwen Image Studio, Wan Video
-  Studio) — the **base is rebased to Ubuntu 26.04** with Python 3.13 from
-  deadsnakes to match the torch wheel ABI. The ROCm/PyTorch pip install line is
-  identical to upstream.
-- The **`scripts/`** and **`workflows/`** are unchanged: same `model_manager`,
-  `set_extra_paths.sh`, `get_*.sh` model fetchers, ROCm env vars, and the
-  `start_comfy_ui` alias with the critical Strix Halo flags
+- **`Dockerfile`** — `ubuntu:26.04` base, ROCm nightlies (TheRock, gfx1151) +
+  PyTorch, ComfyUI with `ComfyUI_essentials`, `ComfyUI-AMDGPUMonitor`,
+  `ComfyUI-GGUF`, plus Qwen Image Studio and Wan Video Studio.
+- **`scripts/`** — `model_manager` (TUI weight downloader), `set_extra_paths.sh`,
+  per-model fetchers (`get_qwen_image.sh`, `get_wan22.sh`, `get_hunyuan15.sh`,
+  `get_ltx2.sh`), ROCm env vars, a login banner, and the `start_comfy_ui` alias
+  with the Strix-Halo-critical flags
   (`--disable-mmap --cache-none --bf16-vae --gpu-only --disable-smart-memory`).
-- Same GPU passthrough flags (container is named `comfyui-strixhalo`)
-  (`--device /dev/dri --device /dev/kfd --group-add video --group-add render
-  --security-opt seccomp=unconfined`).
+- **`workflows/`** — ready-to-load ComfyUI workflows for Qwen Image / Edit,
+  Wan 2.2, HunyuanVideo 1.5, and LTX2.
 
-## What's Ubuntu-specific (the new bits)
+### Host & build scripts
 
 | File | Purpose |
 |------|---------|
-| `host-setup-ubuntu.sh` | Installs podman + distrobox + skopeo/jq, sets up rootless sub-UID/GID, adds you to `render`/`video`, verifies `/dev/kfd` + `/dev/dri`. |
-| `setup-kernel-ubuntu.sh` | Guided editor for `GRUB_CMDLINE_LINUX_DEFAULT` (Ubuntu's GRUB) with `amd_iommu`/`gttsize`/`ttm.pages_limit` auto-sized to your RAM. Backup + dry-run. |
+| `host-setup-ubuntu.sh` | Installs podman + distrobox, sets up rootless sub-UID/GID, adds you to `render`/`video`, verifies `/dev/kfd` + `/dev/dri`. |
+| `setup-kernel-ubuntu.sh` | Guided editor for `GRUB_CMDLINE_LINUX_DEFAULT` with `amd_iommu`/`gttsize`/`ttm.pages_limit` auto-sized to your RAM. Backup + dry-run. |
 | `build-image.sh` | Builds the image locally with rootless podman → `localhost/comfyui-strixhalo:latest`. |
-| `refresh-toolbox.sh` | distrobox-only, uses your **local** image (no Docker Hub pull). `--pull` opt-in to use kyuz0's prebuilt image instead. |
+| `refresh-distrobox.sh` | Creates/recreates the `comfyui-strixhalo` distrobox from your local image. |
 
 ---
 
@@ -61,7 +55,7 @@ sudo reboot
 ./build-image.sh                   # -> localhost/comfyui-strixhalo:latest
 
 # 4. Create the distrobox and enter it
-./refresh-toolbox.sh               # creates the container from your local image
+./refresh-distrobox.sh             # creates the container from your local image
 distrobox enter comfyui-strixhalo
 
 # 5. Inside the container — first-time model setup, then launch
@@ -76,14 +70,32 @@ Open <http://localhost:8000>. Outputs land in `~/comfy-outputs`, models in
 
 ---
 
+## The Python pin (important)
+
+Ubuntu 26.04's default Python is **3.14**, but TheRock's gfx1151 torch wheels
+target the **3.13** ABI — and ComfyUI itself recommends 3.13 ("very well
+supported") over 3.14. So the Dockerfile installs Python **3.13 from the
+deadsnakes PPA** and builds the venv from it.
+
+> Do **not** switch the Dockerfile to the system `python3`: there's no cp314
+> torch wheel for gfx1151 and the `pip install ... torch` step will fail to
+> resolve. The gfx1151 nightly index ships cp313 wheels (verified: torch 2.10.0).
+> If a future ROCm nightly ships cp314 wheels, bump the deadsnakes package and
+> the `python3.13` references together.
+
+The base image layer (`ubuntu:26.04` → deadsnakes → python3.13 venv) is
+build-tested and yields Python 3.13.x in `/opt/venv`. The ROCm/PyTorch and
+ComfyUI layers require the real gfx1151 hardware to exercise.
+
+---
+
 ## Kernel / unified-memory parameters
 
 Strix Halo needs the iGPU's GTT window opened up so ROCm can use most of system
 RAM as VRAM. `setup-kernel-ubuntu.sh` edits **`GRUB_CMDLINE_LINUX_DEFAULT`** in
-`/etc/default/grub` (Ubuntu uses `_DEFAULT`; upstream Fedora used
-`GRUB_CMDLINE_LINUX`) and runs `update-grub`.
+`/etc/default/grub` and runs `update-grub`.
 
-For a 128 GB machine it sets (reserving 4 GiB for the OS, identical to upstream):
+For a 128 GB machine it sets (reserving 4 GiB for the OS):
 
 ```
 amd_iommu=off amdgpu.gttsize=126976 ttm.pages_limit=32505856
@@ -100,39 +112,11 @@ amd_iommu=off amdgpu.gttsize=126976 ttm.pages_limit=32505856
 
 ---
 
-## Building vs. pulling
-
-This builds our **own** Ubuntu-based image locally with rootless podman
-(`build-image.sh` → `localhost/comfyui-strixhalo:latest`). The base is
-`ubuntu:26.04`; Python 3.13 comes from the deadsnakes PPA so it matches TheRock's
-gfx1151 torch wheel ABI.
-
-If you ever want to skip the build and use the maintainer's published
-(Fedora-based) image instead:
-
-```bash
-./refresh-toolbox.sh --pull        # pulls docker.io/kyuz0/amd-strix-halo-comfyui:latest
-```
-
-> **Python pin matters.** Do not change the Dockerfile to use Ubuntu's default
-> `python3` (3.14 on 26.04). The gfx1151 nightly index ships **cp313** torch
-> wheels (verified: torch 2.10.0), and ComfyUI itself recommends 3.13 ("very well
-> supported") over 3.14. Keep the deadsnakes 3.13 venv. If a future ROCm nightly
-> ships cp314 wheels, bump the PPA package and the `python3.13` references
-> together.
->
-> The Ubuntu base layer (ubuntu:26.04 → deadsnakes → python3.13 venv) has been
-> build-tested; it produces Python 3.13.x inside `/opt/venv`. The ROCm/PyTorch
-> and ComfyUI layers are unchanged from upstream and require the real gfx1151
-> hardware to exercise.
-
----
-
 ## Updating / rebuilding
 
 ```bash
 ./build-image.sh                   # rebuild the image (re-pulls ROCm/ComfyUI)
-./refresh-toolbox.sh               # recreate the container from the new image
+./refresh-distrobox.sh             # recreate the container from the new image
 ```
 
 Recreating the container **never** deletes `~/comfy-models` or `~/comfy-outputs`.
@@ -155,9 +139,7 @@ Recreating the container **never** deletes `~/comfy-models` or `~/comfy-outputs`
 
 ---
 
-## Credits
+## Acknowledgements
 
-All credit for the container, ComfyUI tuning, ROCm work, and workflows goes to
-**[kyuz0](https://github.com/kyuz0)** and the upstream
-[amd-strix-halo-comfyui-toolboxes](https://github.com/kyuz0/amd-strix-halo-comfyui-toolboxes)
-project. This repo only adds the Ubuntu 26.04 / distrobox host glue.
+Built on the open-source AMD ROCm / TheRock gfx1151 PyTorch wheels, ComfyUI, and
+the wider Strix Halo community's tuning work for unified-memory inference.

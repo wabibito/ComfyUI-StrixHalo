@@ -5,8 +5,7 @@
 #
 # The Dockerfile uses an Ubuntu 26.04 base. Python 3.13 is pulled from the
 # deadsnakes PPA (not the system 3.14) because TheRock's gfx1151 ROCm/PyTorch
-# wheels target the 3.13 ABI. The ROCm/PyTorch install line is otherwise
-# unchanged from upstream.
+# wheels target the 3.13 ABI.
 #
 # Produces:  localhost/comfyui-strixhalo:latest
 #
@@ -57,4 +56,4 @@ log "Built ${IMAGE}"
 podman image inspect --format '   id:     {{.Id}}' "${IMAGE}" 2>/dev/null || true
 podman image inspect --format '   size:   {{.Size}} bytes' "${IMAGE}" 2>/dev/null || true
 echo
-log "Next: create + enter the distrobox:  ./refresh-toolbox.sh ${TAG}"
+log "Next: create + enter the distrobox:  ./refresh-distrobox.sh ${TAG}"

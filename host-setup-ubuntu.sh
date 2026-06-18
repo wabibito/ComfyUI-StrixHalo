@@ -43,12 +43,11 @@ fi
 # ----------------------------------------------------------------------------
 # 1. Install packages
 #    - podman          : rootless container runtime (distrobox backend)
-#    - distrobox       : container manager that runs the Fedora image on Ubuntu
-#    - skopeo, jq      : optional, used by refresh-toolbox.sh for image inspect
+#    - distrobox       : runs the locally-built image as an integrated container
 #    - uidmap, slirp4netns, fuse-overlayfs : rootless podman plumbing
 #    - curl, ca-certificates : misc
 # ----------------------------------------------------------------------------
-PKGS=(podman distrobox skopeo jq uidmap slirp4netns fuse-overlayfs curl ca-certificates)
+PKGS=(podman distrobox uidmap slirp4netns fuse-overlayfs curl ca-certificates)
 
 log "Installing host packages: ${PKGS[*]}"
 sudo apt-get update -y
@@ -131,7 +130,7 @@ log "Host setup complete."
 echo "Next steps:"
 echo "  1. (If you have not already) configure unified memory:  ./setup-kernel-ubuntu.sh"
 echo "  2. Build the container image:                           ./build-image.sh"
-echo "  3. Create + enter the distrobox:                        ./refresh-toolbox.sh"
+echo "  3. Create + enter the distrobox:                        ./refresh-distrobox.sh"
 echo
 if [[ $NEED_RELOGIN -eq 1 ]]; then
     warn "You were added to new groups (render/video)."

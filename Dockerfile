@@ -96,8 +96,8 @@ RUN chmod -R a+rwX /opt && chmod +x /opt/*.sh || true && \
 COPY scripts/01-rocm-envs.sh /etc/profile.d/01-rocm-envs.sh
 
 # Banner script (runs on login). Use a high sort key so it runs after venv.sh and 01-rocm-env...
-COPY scripts/99-toolbox-banner.sh /etc/profile.d/99-toolbox-banner.sh
-RUN chmod 0644 /etc/profile.d/99-toolbox-banner.sh
+COPY scripts/99-distrobox-banner.sh /etc/profile.d/99-distrobox-banner.sh
+RUN chmod 0644 /etc/profile.d/99-distrobox-banner.sh
 
 # Keep /opt/venv/bin first after user dotfiles
 COPY scripts/zz-venv-last.sh /etc/profile.d/zz-venv-last.sh
