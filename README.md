@@ -165,12 +165,18 @@ image from that repo, so a second machine can pull instead of rebuild.
   /dev/dri/renderD*`. Inside the box: `rocminfo | grep -i gfx` (expect
   `gfx1151`) and `rocm-smi`.
 - **OOM during VAE decode / slow above 64 GB** — these are exactly what the
-  `start_comfy_ui` flags address; make sure you launched via the alias, not a
-  bare `python main.py`.
+  `start_comfy_ui` flags address; make sure you launched via `start_comfy_ui`,
+  not a bare `python main.py`.
 
 ---
 
-## Acknowledgements
+## License & attribution
 
-Built on the open-source AMD ROCm / TheRock gfx1151 PyTorch wheels, ComfyUI, and
-the wider Strix Halo community's tuning work for unified-memory inference.
+Distributed under **GPL-3.0** (see [LICENSE](LICENSE)) because the build bundles
+the full ComfyUI source, which is GPL-3.0. Vendored third-party components keep
+their own licenses (MIT / Apache-2.0 / GPL-3.0) — see [NOTICE.md](NOTICE.md) for
+the full attribution table, and each `vendor/<component>/` directory for its
+original license and pinned commit.
+
+Built on AMD ROCm / the TheRock gfx1151 PyTorch wheels, ComfyUI, and the wider
+Strix Halo community's unified-memory tuning work.
