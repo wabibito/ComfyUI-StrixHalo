@@ -90,9 +90,10 @@ RUN python -m pip install -r /opt/qwen-image-studio/requirements.txt
 
 # Wan Video Studio (vendored)
 COPY vendor/wan-video-studio /opt/wan-video-studio
+# shellcheck disable=SC2102  # imageio[ffmpeg] is a pip extras spec, not a glob range
 RUN python -m pip install --prefer-binary \
     opencv-python-headless diffusers tokenizers accelerate \
-    imageio[ffmpeg] easydict ftfy dashscope imageio-ffmpeg decord librosa
+    "imageio[ffmpeg]" easydict ftfy dashscope imageio-ffmpeg decord librosa
 
 # Permissions & trims (keep compilers/headers)
 RUN chmod -R a+rwX /opt && chmod +x /opt/*.sh || true && \
