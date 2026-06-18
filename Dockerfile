@@ -42,6 +42,7 @@ COPY scripts/get_ltx2.sh /opt/
 COPY scripts/benchmark_workflows.py /opt/
 COPY scripts/collect_perf_logs.py /opt/
 COPY scripts/model_manager.py /opt/
+COPY scripts/smoke-test.sh /opt/
 COPY workflows/API /opt/comfy-workflows
 
 # Expose user-facing commands on PATH (/opt/venv/bin is on PATH).

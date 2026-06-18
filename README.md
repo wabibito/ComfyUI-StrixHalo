@@ -80,6 +80,11 @@ Open <http://localhost:8000>. Outputs land in `~/comfy-outputs`, models in
 `~/comfy-models` — both in your **host** home directory (distrobox shares
 `$HOME`), so they survive container rebuilds.
 
+> **Verifying on real hardware?** Follow [docs/TESTING.md](docs/TESTING.md) — a
+> phased checklist from host setup through GPU visibility to per-workflow
+> generation. Inside the container, `/opt/smoke-test.sh` runs the mechanical
+> checks (venv, ROCm/torch GPU access, ComfyUI startup) and prints pass/fail.
+
 ---
 
 ## The Python pin (important)
