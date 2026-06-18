@@ -1,0 +1,21 @@
+# Local runtime data (live in $HOME on the target box, never in the repo)
+comfy-models/
+comfy-outputs/
+
+# GRUB backups produced by setup-kernel-ubuntu.sh
+*.bak.*
+grub.bak*
+
+# Python / build cruft
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
