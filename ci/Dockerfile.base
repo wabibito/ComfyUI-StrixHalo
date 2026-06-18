@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1
+# CI-only Dockerfile: builds everything that does NOT need a gfx1151 GPU —
+# the Ubuntu base, the deadsnakes Python 3.13 venv, and the vendored COPY layers.
+# It deliberately omits the ROCm/PyTorch + pip install layers (multi-GB, GPU),
+# which are exercised on real hardware via the top-level Dockerfile.
+#
+# Keep the FROM / apt / venv / COPY lines in sync with ../Dockerfile.
+FROM ubuntu:26.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common ca-certificates gnupg curl \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.13 python3.13-venv python3.13-dev dialog \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN /usr/bin/python3.13 -m venv --copies /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+
+# Vendored COPY layers (mirror ../Dockerfile)
+COPY vendor/ComfyUI /opt/ComfyUI
+COPY vendor/custom_nodes/ComfyUI_essentials      /opt/ComfyUI/custom_nodes/ComfyUI_essentials
+COPY vendor/custom_nodes/ComfyUI-AMDGPUMonitor   /opt/ComfyUI/custom_nodes/ComfyUI-AMDGPUMonitor
+COPY vendor/custom_nodes/ComfyUI-GGUF            /opt/ComfyUI/custom_nodes/ComfyUI-GGUF
+COPY vendor/qwen-image-studio /opt/qwen-image-studio
+COPY vendor/wan-video-studio /opt/wan-video-studio
+COPY scripts/start_comfy_ui /opt/venv/bin/start_comfy_ui
+COPY scripts/model_manager.py /opt/model_manager.py
+RUN printf '#!/usr/bin/env bash\nexec python /opt/model_manager.py "$@"\n' > /opt/venv/bin/model_manager \
+    && chmod 0755 /opt/venv/bin/start_comfy_ui /opt/venv/bin/model_manager
+
+# Assert the image is wired up the way the real build & runtime expect.
+RUN set -e; \
+    python --version | grep -q '3.13' && echo "OK python 3.13"; \
+    test -f /opt/ComfyUI/main.py && echo "OK ComfyUI"; \
+    test -f /opt/ComfyUI/custom_nodes/ComfyUI-GGUF/requirements.txt && echo "OK GGUF node"; \
+    test -f /opt/qwen-image-studio/requirements.txt && echo "OK qwen-studio"; \
+    test -f /opt/wan-video-studio/requirements.txt && echo "OK wan-studio"; \
+    command -v start_comfy_ui && echo "OK start_comfy_ui on PATH"; \
+    command -v model_manager  && echo "OK model_manager on PATH"; \
+    command -v dialog         && echo "OK dialog present"; \
+    echo "BASE + VENDORED LAYERS OK"

@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Note: full image builds need AMD Strix Halo (gfx1151) hardware + multi-GB ROCm
+# wheels, which GitHub runners don't have. CI validates everything that does NOT
+# need the GPU: script correctness, Dockerfile hygiene, and that the Ubuntu base
+# + deadsnakes Python 3.13 + vendored COPY layers actually build.
+
+jobs:
+  lint-scripts:
+    name: Lint shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n syntax check (our scripts only, not vendored)
+        run: |
+          set -e
+          fail=0
+          for f in $(git ls-files '*.sh' 'scripts/start_comfy_ui' | grep -v '^vendor/'); do
+            if bash -n "$f"; then echo "ok  $f"; else echo "ERR $f"; fail=1; fi
+          done
+          exit $fail
+
+      - name: ShellCheck (real bugs only — error severity)
+        uses: ludeeus/action-shellcheck@master
+        with:
+          severity: error
+          # Lint our scripts; never the vendored upstreams.
+          ignore_paths: vendor
+
+  hadolint:
+    name: Dockerfile lint (informational)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          # Opinionated; don't fail the build on style. Surfaces issues in logs.
+          failure-threshold: error
+          # DL3008: pin apt versions — impractical against deadsnakes/rolling.
+          ignore: DL3008,DL3013,DL3059
+
+  build-base:
+    name: Build Ubuntu base + vendored layers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vendor build-time sources
+        run: ./vendor.sh
+
+      - name: Build base + vendored layers (no GPU/ROCm)
+        run: docker build -f ci/Dockerfile.base -t comfyui-strixhalo-ci-base .
