@@ -28,6 +28,11 @@ outputs live in your home directory and persist across rebuilds.
   (`--disable-mmap --cache-none --bf16-vae --gpu-only --disable-smart-memory`).
 - **`workflows/`** — ready-to-load ComfyUI workflows for Qwen Image / Edit,
   Wan 2.2, HunyuanVideo 1.5, and LTX2.
+- **`vendor/`** — our own snapshot of every build-time source dependency
+  (ComfyUI + the three custom nodes + both studios), so the image is built
+  entirely from sources we control rather than cloned from third-party accounts
+  at build time. Refreshed by `vendor.sh`; each dir records its origin + commit
+  in a `.vendor-source` file.
 
 ### Host & build scripts
 
@@ -35,8 +40,14 @@ outputs live in your home directory and persist across rebuilds.
 |------|---------|
 | `host-setup-ubuntu.sh` | Installs podman + distrobox, sets up rootless sub-UID/GID, adds you to `render`/`video`, verifies `/dev/kfd` + `/dev/dri`. |
 | `setup-kernel-ubuntu.sh` | Guided editor for `GRUB_CMDLINE_LINUX_DEFAULT` with `amd_iommu`/`gttsize`/`ttm.pages_limit` auto-sized to your RAM. Backup + dry-run. |
-| `build-image.sh` | Builds the image locally with rootless podman → `localhost/comfyui-strixhalo:latest`. |
-| `refresh-distrobox.sh` | Creates/recreates the `comfyui-strixhalo` distrobox from your local image. |
+| `vendor.sh` | Clones every build-time dependency into `vendor/` (strips `.git`/nested `.gitignore`, pins commit SHAs). Run to refresh deps; commit the result. |
+| `build-image.sh` | Builds the image from `vendor/` with rootless podman → `localhost/comfyui-strixhalo:latest`. `--push` + `REGISTRY`/`IMAGE_NAMESPACE` to publish under your own registry. |
+| `refresh-distrobox.sh` | Creates/recreates the `comfyui-strixhalo` distrobox from your built image. |
+
+> **Self-contained build.** Once `vendor/` is committed, `podman build` pulls no
+> code from anyone else's GitHub — only OS packages (apt) and Python wheels
+> (ROCm index + PyPI). To re-own a component, repoint its URL in `vendor.sh`
+> (e.g. to your fork) and re-run it.
 
 ---
 
@@ -115,11 +126,30 @@ amd_iommu=off amdgpu.gttsize=126976 ttm.pages_limit=32505856
 ## Updating / rebuilding
 
 ```bash
-./build-image.sh                   # rebuild the image (re-pulls ROCm/ComfyUI)
+./vendor.sh                        # refresh vendored deps to latest (optional)
+./build-image.sh                   # rebuild the image
 ./refresh-distrobox.sh             # recreate the container from the new image
 ```
 
-Recreating the container **never** deletes `~/comfy-models` or `~/comfy-outputs`.
+`./vendor.sh comfyui` re-vendors just ComfyUI; `./vendor.sh` with no args
+refreshes everything. Recreating the container **never** deletes
+`~/comfy-models` or `~/comfy-outputs`.
+
+## Publishing under your own registry
+
+The build is local-only by default (`localhost/comfyui-strixhalo`). To push the
+image you built to your own registry:
+
+```bash
+# Docker Hub
+REGISTRY=docker.io IMAGE_NAMESPACE=youruser ./build-image.sh --push
+# or GitHub Container Registry
+REGISTRY=ghcr.io   IMAGE_NAMESPACE=youruser ./build-image.sh --push
+```
+
+`podman login <registry>` first if you aren't already authenticated. The same
+`REGISTRY`/`IMAGE_NAMESPACE` env vars make `refresh-distrobox.sh` pick up the
+image from that repo, so a second machine can pull instead of rebuild.
 
 ---
 

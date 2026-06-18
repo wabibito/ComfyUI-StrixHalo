@@ -1,0 +1,14 @@
+[project]
+name = "amdgpumonitor"
+description = "A simple, lightweight AMD GPU monitoring tool for ComfyUI that displays real-time information about your AMD GPU directly in the UI."
+version = "1.0.0"
+license = {file = "LICENSE"}
+
+[project.urls]
+Repository = "https://github.com/iDAPPA/ComfyUI-AMDGPUMonitor"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = "idappa"
+DisplayName = "ComfyUI-AMDGPUMonitor"
+Icon = ""

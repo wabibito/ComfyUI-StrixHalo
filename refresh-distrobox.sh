@@ -17,7 +17,19 @@ warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
 err()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; }
 
 DISTROBOX_NAME="comfyui-strixhalo"
-LOCAL_REPO="localhost/comfyui-strixhalo"
+
+# Image repo. Mirrors build-image.sh: defaults to the local build, but honours
+# REGISTRY / IMAGE_NAMESPACE (or a full IMAGE_NAME) if you built to your own
+# registry.
+REGISTRY="${REGISTRY:-localhost}"
+IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-}"
+if [[ -n "${IMAGE_NAME:-}" ]]; then
+    REPO="$IMAGE_NAME"
+elif [[ -n "$IMAGE_NAMESPACE" ]]; then
+    REPO="${REGISTRY}/${IMAGE_NAMESPACE}/comfyui-strixhalo"
+else
+    REPO="${REGISTRY}/comfyui-strixhalo"
+fi
 
 # --- Args: channel (latest|dev) ---
 CHANNEL="latest"
@@ -30,7 +42,7 @@ for arg in "$@"; do
     esac
 done
 
-IMAGE="${LOCAL_REPO}:${CHANNEL}"
+IMAGE="${REPO}:${CHANNEL}"
 
 # GPU passthrough flags (AMD ROCm devices + render/video groups).
 OPTIONS="--device /dev/dri --device /dev/kfd --group-add video --group-add render --security-opt seccomp=unconfined"
@@ -45,13 +57,18 @@ if ! command -v podman &>/dev/null; then
     exit 1
 fi
 
-# --- Ensure the locally-built image exists ---
-if ! podman image exists "$IMAGE"; then
+# --- Ensure the image is available ---
+if podman image exists "$IMAGE"; then
+    log "Using image: $IMAGE"
+elif [[ "$REGISTRY" != "localhost" ]]; then
+    # Image lives in a real registry but isn't pulled yet — fetch it.
+    log "Pulling image from registry: $IMAGE"
+    podman pull "$IMAGE"
+else
     err "Local image '$IMAGE' not found."
     err "Build it first:  ./build-image.sh ${CHANNEL}"
     exit 1
 fi
-log "Using local image: $IMAGE"
 
 # --- Remove existing container if present ---
 if distrobox list 2>/dev/null | grep -q "$DISTROBOX_NAME"; then

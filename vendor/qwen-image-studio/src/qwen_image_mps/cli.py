@@ -1,0 +1,1313 @@
+import argparse
+
+import os
+import re
+import secrets
+import shlex
+import sys
+import time
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
+from threading import Event, Thread
+import traceback
+
+import safetensors.torch as _st
+import torch
+import torch.nn.functional
+import torch.nn.functional as F
+import tqdm.auto as tqdm_auto
+from PIL.PngImagePlugin import PngInfo
+
+LORA_MERGE_DEV = os.getenv("c", "auto").lower()  # cpu|cuda|auto
+LORA_FALLBACK  = os.getenv("QWEN_LORA_MERGE_FALLBACK", "1") not in {"0","false","FALSE"}
+LORA_DBG       = os.getenv("QWEN_LORA_MERGE_DEBUG", "0") in {"1","true","TRUE"}
+
+# --- FlashAttention shim (simple on/off switch) ---
+if os.getenv("QWEN_FA_SHIM", "0").lower() in {"1", "true", "yes"}:
+    try:
+        from flash_attn.flash_attn_interface import flash_attn_func as _fa
+    except Exception:
+        _fa = None
+
+    import torch
+    import torch.nn.functional as F
+
+    _orig = F.scaled_dot_product_attention
+    _dbg  = os.getenv("QWEN_FA_DEBUG", "0").lower() in {"1","true","yes","on"}
+    _sync = os.getenv("QWEN_FA_SYNC",  "0").lower() in {"1","true","yes","on"}
+
+    def _sdpa_or_fa(*args, **kw):
+        # Extract common args from both positional/keyword call patterns
+        q = kw.get("query", args[0] if args else None)
+        k = kw.get("key",   args[1] if len(args) > 1 else None)
+        v = kw.get("value", args[2] if len(args) > 2 else None)
+        attn_mask = kw.get("attn_mask", kw.get("attention_mask"))
+        dropout_p = kw.get("dropout_p", 0.0)
+        is_causal = kw.get("is_causal", False)
+        scale     = kw.get("scale", kw.get("softmax_scale"))
+
+        # Minimal preconditions so we don't call FA in clearly-unsupported cases
+        can_try_fa = (
+            _fa is not None
+            and q is not None and k is not None and v is not None
+            and attn_mask is None
+            and dropout_p == 0.0
+            and not is_causal
+            and q.is_cuda and k.is_cuda and v.is_cuda
+            and q.dtype in (torch.float16, torch.bfloat16)
+            and q.shape[1] == k.shape[1] == v.shape[1]
+        )
+
+        if can_try_fa:
+            try:
+                if scale is None:
+                    scale = (q.shape[-1]) ** -0.5
+                out = _fa(
+                    q.transpose(1, 2).contiguous(),
+                    k.transpose(1, 2).contiguous(),
+                    v.transpose(1, 2).contiguous(),
+                    dropout_p=0.0,
+                    softmax_scale=scale,
+                    causal=False,
+                ).transpose(1, 2)
+                if _sync:
+                    torch.cuda.synchronize()
+                if _dbg:
+                    print("ATTN: FA")
+                return out
+            except Exception as e:
+                if _dbg:
+                    print(f"ATTN: FA->SDPA due to {type(e).__name__}: {e}")
+
+        if _dbg:
+            print("ATTN: SDPA")
+        return _orig(*args, **kw)
+
+    F.scaled_dot_product_attention = _sdpa_or_fa
+    print("ATTN: FA shim ON")
+else:
+    print("ATTN: FA shim OFF")
+# --------------------------------------------------
+
+
+
+def _rt_no_sigmas(
+    scheduler,
+    num_inference_steps=None,
+    device=None,
+    timesteps=None,
+    sigmas=None,
+    **kwargs,
+):
+    scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
+    ts = scheduler.timesteps
+    return ts, len(ts)
+
+
+def get_output_dir():
+    """Get the default output directory for images."""
+    output_dir = Path.home() / ".qwen-image-studio"
+    output_dir.mkdir(exist_ok=True)
+    return output_dir
+
+
+def _full_command_line() -> str:
+    return " ".join(shlex.quote(a) for a in sys.argv)
+
+
+def _print_stage(msg: str) -> None:
+    # Single flushy print used by the server parser
+    print(f"CLI: {msg}", flush=True)
+
+
+class _CRToNL:
+    """Turn carriage-return redraws into newline lines so logs are persistent."""
+
+    def __init__(self, stream):
+        self._s = stream
+
+    def write(self, s: str):
+        s = s.replace("\r", "\n")
+        return self._s.write(s)
+
+    def flush(self):
+        return self._s.flush()
+
+
+@contextmanager
+def _patch_diffusers_progress():
+    """
+    Context manager to patch diffusers' tqdm to emit explicit progress messages
+    that the web server can parse.
+    """
+    original_tqdm = tqdm_auto.tqdm
+
+    class DenoiseProgressTqdm(original_tqdm):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._last_pct = -1
+
+        def update(self, n=1):
+            result = super().update(n)
+            if self.total and self.desc and "denois" in self.desc.lower():
+                pct = int(self.n * 100 // self.total)
+                # Force update even if percentage is the same, but limit frequency
+                if pct != self._last_pct or (self.n % max(1, self.total // 20) == 0):
+                    print(f"CLI: denoise {pct}%", flush=True)
+                    sys.stdout.flush()  # Force flush
+                    self._last_pct = pct
+            return result
+
+    # Patch tqdm
+    tqdm_auto.tqdm = DenoiseProgressTqdm
+
+    try:
+        yield
+    finally:
+        # Always restore original tqdm
+        tqdm_auto.tqdm = original_tqdm
+
+
+@contextmanager
+def _progress_heartbeat(label: str = "Denoising", interval: float = 2.0):
+    """
+    Emits 'CLI: <label>…' every `interval` seconds so the UI knows we're busy
+    during long, callback-less sections of the pipeline.
+    """
+    stop = Event()
+
+    def run():
+        while not stop.wait(interval):
+            print(".", end="", flush=True)
+
+    t = Thread(target=run, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        t.join(timeout=0.2)
+
+
+def build_generate_parser(subparsers) -> argparse.ArgumentParser:
+    parser = subparsers.add_parser(
+        "generate",
+        help="Generate a new image from text prompt",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "-p",
+        "--prompt",
+        type=str,
+        default="""A coffee shop entrance features a chalkboard sign reading "Apple Silicon Qwen Coffee 😊 $2 per cup," with a neon light beside it displaying "Generated with MPS on Apple Silicon". Next to it hangs a poster showing a beautiful Italian woman, and beneath the poster is written "Just try it!". Ultra HD, 4K, cinematic composition""",
+        help="Prompt text to condition the image generation.",
+    )
+    parser.add_argument(
+        "-s",
+        "--steps",
+        type=int,
+        default=50,
+        help="Number of inference steps for normal generation.",
+    )
+    parser.add_argument(
+        "-f",
+        "--fast",
+        action="store_true",
+        help="Use Lightning LoRA v1.1 for fast generation (8 steps).",
+    )
+    parser.add_argument(
+        "-uf",
+        "--ultra-fast",
+        action="store_true",
+        help="Use Lightning LoRA v1.0 for ultra-fast generation (4 steps).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Random seed for reproducible generation. If not provided, a random seed "
+            "will be used for each image."
+        ),
+    )
+    parser.add_argument(
+        "--num-images",
+        type=int,
+        default=1,
+        help="Number of images to generate.",
+    )
+    parser.add_argument(
+        "--size",
+        type=str,
+        default="16:9",
+        choices=["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+        help="Aspect ratio / resolution preset.",
+    )
+    parser.add_argument(
+        "--lora",
+        type=str,
+        default=None,
+        help="Path to local .safetensors file, Hugging Face model URL or repo ID for additional LoRA to load (e.g., '~/Downloads/lora.safetensors', 'flymy-ai/qwen-image-anime-irl-lora' or full HF URL).",
+    )
+    parser.add_argument(
+        "--batman",
+        action="store_true",
+        help="LEGO Batman photobombs your image! 🦇",
+    )
+    return parser
+
+
+def get_lora_path(ultra_fast=False):
+    from huggingface_hub import hf_hub_download
+
+    """Get the Lightning LoRA from Hugging Face Hub with a silent cache freshness check.
+
+    The function will:
+    - Look up any locally cached file for the target filename.
+    - Then fetch the latest from the Hub (without forcing) which will reuse cache
+      if up-to-date, or download a newer snapshot if the remote changed.
+    - Return the final resolved local path.
+    """
+
+    if ultra_fast:
+        filename = "Qwen-Image-Lightning-4steps-V1.0-bf16.safetensors"
+        version = "v1.0 (4-steps)"
+    else:
+        filename = "Qwen-Image-Lightning-8steps-V1.1.safetensors"
+        version = "v1.1 (8-steps)"
+
+    try:
+        cached_path = None
+        try:
+            cached_path = hf_hub_download(
+                repo_id="lightx2v/Qwen-Image-Lightning",
+                filename=filename,
+                repo_type="model",
+                local_files_only=True,
+            )
+        except Exception:
+            cached_path = None
+
+        # Resolve latest from Hub; will reuse cache if fresh, or download newer
+        latest_path = hf_hub_download(
+            repo_id="lightx2v/Qwen-Image-Lightning",
+            filename=filename,
+            repo_type="model",
+        )
+
+        if cached_path and latest_path != cached_path:
+            # A newer snapshot was fetched; keep output quiet per request
+            pass
+
+        print(f"Lightning LoRA {version} loaded from: {latest_path}")
+        return latest_path
+    except Exception as e:
+        print(f"Failed to load Lightning LoRA {version}: {e}")
+        return None
+
+
+def get_custom_lora_path(lora_spec):
+    """Get a custom LoRA from Hugging Face Hub or load from a local file.
+
+    Args:
+        lora_spec: Either a local file path to a safetensors file, a full HF URL,
+                   or a repo ID (e.g., 'flymy-ai/qwen-image-anime-irl-lora')
+
+    Returns:
+        Path to the LoRA file (local or downloaded), or None if failed
+    """
+    import re
+    from pathlib import Path
+
+    from huggingface_hub import hf_hub_download
+
+    # Check if it's a local file path (handles both absolute and ~ paths)
+    lora_path = Path(lora_spec).expanduser()
+    if lora_path.exists() and lora_path.suffix == ".safetensors":
+        print(f"Using local LoRA file: {lora_path}")
+        return str(lora_path.absolute())
+
+    # If not a local file, try HuggingFace
+    # Extract repo_id from URL if it's a full HF URL
+    if lora_spec.startswith("https://huggingface.co/"):
+        # Extract repo_id from URL like https://huggingface.co/flymy-ai/qwen-image-anime-irl-lora
+        match = re.match(r"https://huggingface\.co/([^/]+/[^/]+)", lora_spec)
+        if match:
+            repo_id = match.group(1)
+        else:
+            print(f"Invalid Hugging Face URL format: {lora_spec}")
+            return None
+    else:
+        # Assume it's already a repo ID
+        repo_id = lora_spec
+
+    try:
+        # First, try to list files to find the LoRA safetensors file
+        from huggingface_hub import list_repo_files
+
+        print(f"Looking for LoRA files in {repo_id}...")
+        files = list_repo_files(repo_id, repo_type="model")
+
+        # Find safetensors files that might be LoRAs
+        safetensors_files = [f for f in files if f.endswith(".safetensors")]
+
+        if not safetensors_files:
+            print(f"No safetensors files found in {repo_id}")
+            return None
+
+        # Prefer files with 'lora' in the name, otherwise take the first one
+        lora_files = [f for f in safetensors_files if "lora" in f.lower()]
+        filename = lora_files[0] if lora_files else safetensors_files[0]
+
+        print(f"Downloading LoRA file: {filename}")
+
+        # Download the LoRA file
+        lora_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            repo_type="model",
+        )
+
+        print(f"Custom LoRA loaded from: {lora_path}")
+        return lora_path
+
+    except Exception as e:
+        print(f"Failed to load custom LoRA from {repo_id}: {e}")
+        return None
+
+
+def merge_lora_from_safetensors(pipe, lora_path):
+    import re
+
+    import safetensors.torch as st
+    import torch
+
+    try:
+        from tqdm.auto import tqdm
+    except Exception:
+
+        class _Dummy:
+            def __init__(self, *a, **k):
+                pass
+
+            def update(self, *a, **k):
+                pass
+
+            def close(self):
+                pass
+
+        def tqdm(*a, **k):
+            return _Dummy()
+
+    _print_stage("LoRA merge: loading weights…")
+    transformer = getattr(pipe, "transformer", None) or getattr(pipe, "unet", None)
+    if transformer is None:
+        raise RuntimeError(
+            "Could not locate pipeline.transformer or pipeline.unet to merge LoRA into"
+        )
+
+    target_device = str(next(transformer.parameters()).device)
+    lora_state = st.load_file(lora_path, device="cpu")
+
+    keys = set(lora_state.keys())
+    uses_dot = any(".lora.down" in k or ".lora.up" in k for k in keys)
+    uses_diff = any(k.startswith("lora_unet_") for k in keys)
+    uses_ab = any(".lora_A" in k or ".lora_B" in k for k in keys)
+
+    def convert_diffusers_key_to_transformer_key(diff_key: str) -> str:
+        key = diff_key.replace("lora_unet_", "")
+        key = re.sub(r"transformer_blocks_(\d+)", r"transformer_blocks.\1", key)
+        rep = {
+            "_attn_add_k_proj": ".attn.add_k_proj",
+            "_attn_add_q_proj": ".attn.add_q_proj",
+            "_attn_add_v_proj": ".attn.add_v_proj",
+            "_attn_to_add_out": ".attn.to_add_out",
+            "_ff_context_mlp_fc1": ".ff_context.net.0",
+            "_ff_context_mlp_fc2": ".ff_context.net.2",
+            "_ff_mlp_fc1": ".ff.net.0",
+            "_ff_mlp_fc2": ".ff.net.2",
+            "_attn_to_k": ".attn.to_k",
+            "_attn_to_q": ".attn.to_q",
+            "_attn_to_v": ".attn.to_v",
+            "_attn_to_out_0": ".attn.to_out.0",
+        }
+        for a, b in rep.items():
+            key = key.replace(a, b)
+        return key
+
+    def _device_merge(param, lora_down, lora_up, scaling: float):
+        dev = param.device
+        try_gpu = (LORA_MERGE_DEV in {"cuda","auto"}) and param.is_cuda
+
+        with torch.no_grad():
+            if try_gpu:
+                try:
+                    lu = lora_up.to(device=dev, dtype=torch.float32, non_blocking=True)
+                    ld = lora_down.to(device=dev, dtype=torch.float32, non_blocking=True)
+                    delta = torch.matmul(lu, ld) * float(scaling)
+                    param.data.add_(delta.to(dtype=param.dtype))
+                    if LORA_DBG: print("LoRA merge: GPU ok:", param.shape)
+                    return
+                except Exception as e:
+                    if LORA_DBG:
+                        print("LoRA merge: GPU failed, falling back:", e)
+                        traceback.print_exc()
+                    if not LORA_FALLBACK:
+                        raise
+
+            # CPU fallback (also used when LORA_MERGE_DEV=cpu)
+            lu = lora_up.to(device="cpu", dtype=torch.float32, non_blocking=False)
+            ld = lora_down.to(device="cpu", dtype=torch.float32, non_blocking=False)
+            delta = torch.matmul(lu, ld) * float(scaling)
+            param.data.add_(delta.to(device=dev, dtype=param.dtype, non_blocking=True))
+
+    _print_stage("LoRA merge: scanning model…")
+
+    def count_merges() -> int:
+        cnt = 0
+        if uses_ab:
+            for name, _ in transformer.named_parameters():
+                base = name[:-7] if name.endswith(".weight") else name
+                a1, b1 = (
+                    f"diffusion_model.{base}.lora_A.weight",
+                    f"diffusion_model.{base}.lora_B.weight",
+                )
+                a2, b2 = f"{base}.lora_A.weight", f"{base}.lora_B.weight"
+                if (a1 in keys and b1 in keys) or (a2 in keys and b2 in keys):
+                    cnt += 1
+        elif uses_diff:
+            bases = {}
+            for k in keys:
+                if not k.startswith("lora_unet_"):
+                    continue
+                base = convert_diffusers_key_to_transformer_key(
+                    k.replace(".lora_down.weight", "")
+                    .replace(".lora_up.weight", "")
+                    .replace(".alpha", "")
+                )
+                bases.setdefault(base, set()).add(k)
+            for name, _ in transformer.named_parameters():
+                base = name[:-7] if name.endswith(".weight") else name
+                ks = bases.get(base)
+                if not ks:
+                    continue
+                has_down = any(k.endswith(".lora_down.weight") for k in ks)
+                has_up = any(k.endswith(".lora_up.weight") for k in ks)
+                if has_down and has_up:
+                    cnt += 1
+        else:
+            for name, _ in transformer.named_parameters():
+                base = name[:-7] if name.endswith(".weight") else name
+                if uses_dot:
+                    kd = f"transformer.{base}.lora.down.weight"
+                    ku = f"transformer.{base}.lora.up.weight"
+                    if kd not in keys:
+                        kd = f"{base}.lora.down.weight"
+                        ku = f"{base}.lora.up.weight"
+                else:
+                    kd = f"{base}.lora_down.weight"
+                    ku = f"{base}.lora_up.weight"
+                if kd in keys and ku in keys:
+                    cnt += 1
+        return cnt
+
+    total = count_merges()
+    pbar = tqdm(total=total or None, desc="Merging LoRA", leave=True, mininterval=0.2)
+    merged = 0
+
+    if uses_ab:
+        for name, param in transformer.named_parameters():
+            base = name[:-7] if name.endswith(".weight") else name
+            a1, b1 = (
+                f"diffusion_model.{base}.lora_A.weight",
+                f"diffusion_model.{base}.lora_B.weight",
+            )
+            a2, b2 = f"{base}.lora_A.weight", f"{base}.lora_B.weight"
+            if a1 in keys and b1 in keys:
+                lora_down, lora_up = lora_state[a1], lora_state[b1]
+            elif a2 in keys and b2 in keys:
+                lora_down, lora_up = lora_state[a2], lora_state[b2]
+            else:
+                continue
+            rank = lora_down.shape[0]
+            scaling = 1.0 if rank == 0 else (float(rank) / float(rank))
+            _device_merge(param, lora_down, lora_up, scaling)
+            merged += 1
+            pbar.update(1)
+
+    elif uses_diff:
+        alpha_map = {}
+        down_map = {}
+        up_map = {}
+        for k in keys:
+            if not k.startswith("lora_unet_"):
+                continue
+            base = convert_diffusers_key_to_transformer_key(
+                k.replace(".lora_down.weight", "")
+                .replace(".lora_up.weight", "")
+                .replace(".alpha", "")
+            )
+            if k.endswith(".lora_down.weight"):
+                down_map[base] = k
+            elif k.endswith(".lora_up.weight"):
+                up_map[base] = k
+            elif k.endswith(".alpha"):
+                alpha_map[base] = k
+
+        for name, param in transformer.named_parameters():
+            base = name[:-7] if name.endswith(".weight") else name
+            kd, ku = down_map.get(base), up_map.get(base)
+            if not kd or not ku:
+                continue
+            lora_down, lora_up = lora_state[kd], lora_state[ku]
+            if base in alpha_map:
+                lora_alpha = float(lora_state[alpha_map[base]])
+            else:
+                lora_alpha = lora_down.shape[0]
+            rank = lora_down.shape[0]
+            scaling = (lora_alpha / rank) if rank else 1.0
+            _device_merge(param, lora_down, lora_up, scaling)
+            merged += 1
+            pbar.update(1)
+
+    else:
+        for name, param in transformer.named_parameters():
+            base = name[:-7] if name.endswith(".weight") else name
+            if uses_dot:
+                kd = f"transformer.{base}.lora.down.weight"
+                ku = f"transformer.{base}.lora.up.weight"
+                ka = f"transformer.{base}.alpha"
+                if kd not in keys:
+                    kd = f"{base}.lora.down.weight"
+                    ku = f"{base}.lora.up.weight"
+                    ka = f"{base}.alpha"
+            else:
+                kd = f"{base}.lora_down.weight"
+                ku = f"{base}.lora_up.weight"
+                ka = f"{base}.alpha"
+
+            if kd in keys and ku in keys:
+                lora_down, lora_up = lora_state[kd], lora_state[ku]
+                lora_alpha = float(lora_state[ka]) if ka in keys else lora_down.shape[0]
+                rank = lora_down.shape[0]
+                scaling = (lora_alpha / rank) if rank else 1.0
+                _device_merge(param, lora_down, lora_up, scaling)
+                merged += 1
+                pbar.update(1)
+                
+    # Optional sync if any GPU merges happened
+    if (LORA_MERGE_DEV in {"cuda", "auto"}
+        and next(transformer.parameters()).is_cuda):
+        torch.cuda.synchronize()
+
+    pbar.close()
+    print(f"Merged {merged} LoRA weights into the model")
+    return pipe
+
+
+def build_edit_parser(subparsers) -> argparse.ArgumentParser:
+    parser = subparsers.add_parser(
+        "edit",
+        help="Edit an existing image using text instructions",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "-i",
+        "--input",
+        type=str,
+        required=True,
+        help="Path to the input image to edit.",
+    )
+    parser.add_argument(
+        "-p",
+        "--prompt",
+        type=str,
+        required=True,
+        help="Editing instructions (e.g., 'Change the sky to sunset colors').",
+    )
+    parser.add_argument(
+        "-s",
+        "--steps",
+        type=int,
+        default=50,
+        help="Number of inference steps for normal editing.",
+    )
+    parser.add_argument(
+        "-f",
+        "--fast",
+        action="store_true",
+        help="Use Lightning LoRA v1.1 for fast editing (8 steps).",
+    )
+    parser.add_argument(
+        "-uf",
+        "--ultra-fast",
+        action="store_true",
+        help="Use Lightning LoRA v1.0 for ultra-fast editing (4 steps).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducible generation. If not provided, a random seed will be used.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        default=None,
+        help="Output filename (default: edited-<timestamp>.png).",
+    )
+    parser.add_argument(
+        "--lora",
+        type=str,
+        default=None,
+        help="Path to local .safetensors file, Hugging Face model URL or repo ID for additional LoRA to load (e.g., '~/Downloads/lora.safetensors', 'flymy-ai/qwen-image-anime-irl-lora' or full HF URL).",
+    )
+    parser.add_argument(
+        "--batman",
+        action="store_true",
+        help="LEGO Batman photobombs your image! 🦇",
+    )
+    return parser
+
+
+def build_download_parser(subparsers) -> argparse.ArgumentParser:
+    p = subparsers.add_parser(
+        "download",
+        help="Pre-download models/weights",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument(
+        "targets",
+        nargs="?",
+        default="list",
+        help="Comma-separated list, or 'all', or 'list'. "
+        "Options: qwen-image, qwen-image-edit, lightning-lora-8, lightning-lora-4",
+    )
+    return p
+
+
+def download_models(args) -> None:
+    from shutil import copy2
+
+    from huggingface_hub import hf_hub_download, snapshot_download
+
+    catalog = {
+        "qwen-image": {"kind": "snapshot", "repo": "Qwen/Qwen-Image"},
+        "qwen-image-edit": {"kind": "snapshot", "repo": "Qwen/Qwen-Image-Edit"},
+        "lightning-lora-8": {
+            "kind": "file",
+            "repo": "lightx2v/Qwen-Image-Lightning",
+            "file": "Qwen-Image-Lightning-8steps-V1.1.safetensors",
+        },
+        "lightning-lora-4": {
+            "kind": "file",
+            "repo": "lightx2v/Qwen-Image-Lightning",
+            "file": "Qwen-Image-Lightning-4steps-V1.0-bf16.safetensors",
+        },
+    }
+    if args.targets == "list":
+        print("Available:", ", ".join(catalog.keys()))
+        return
+    targets = (
+        list(catalog.keys())
+        if args.targets == "all"
+        else [t.strip() for t in args.targets.split(",") if t.strip()]
+    )
+    for t in targets:
+        if t not in catalog:
+            print(f"Skip unknown: {t}")
+            continue
+        item = catalog[t]
+        if item["kind"] == "snapshot":
+            path = snapshot_download(repo_id=item["repo"], repo_type="model")
+            print(f"{t}: cached -> {path}")
+        elif item["kind"] == "file":
+            path = hf_hub_download(
+                repo_id=item["repo"], filename=item["file"], repo_type="model"
+            )
+            print(f"{t}: cached file -> {path}")
+
+
+def get_device_and_dtype():
+    if torch.cuda.is_available():
+        print("Using CUDA/ROCm")
+        return "cuda", torch.bfloat16
+    elif torch.backends.mps.is_available():
+        print("Using MPS")
+        return "mps", torch.bfloat16
+    else:
+        print("Using CPU")
+        return "cpu", torch.float32
+
+
+def _device_map_str(device: str) -> str:
+    return "cuda:0" if device == "cuda" else device
+
+
+def create_generator(device, seed):
+    """Create a torch.Generator with the appropriate device."""
+
+    generator_device = "cpu" if device == "mps" else device
+    return torch.Generator(device=generator_device).manual_seed(seed)
+
+
+def generate_image(args) -> None:
+    from diffusers import DiffusionPipeline
+
+    model_name = "Qwen/Qwen-Image"
+    device, torch_dtype = get_device_and_dtype()
+
+    _print_stage(f"Loading base pipeline: {model_name} (dtype={torch_dtype})")
+    torch.set_default_device(device)
+
+    pipe = DiffusionPipeline.from_pretrained(
+        model_name,
+        torch_dtype=torch_dtype,
+        use_safetensors=True,
+        device_map=None,          # load on CPU
+        low_cpu_mem_usage=False,  # disable memmap/sliced GPU placement
+    )
+    pipe.to(device=device, dtype=torch_dtype)  # single move to GPU
+
+
+    # Fix FlowMatch: don't pass sigmas to set_timesteps
+    from diffusers.pipelines.qwenimage import pipeline_qwenimage as _qimg
+
+    def _rt_no_sigmas(
+        scheduler,
+        num_inference_steps=None,
+        device=None,
+        timesteps=None,
+        sigmas=None,
+        **kwargs,
+    ):
+        scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
+        ts = scheduler.timesteps
+        return ts, len(ts)
+
+    _qimg.retrieve_timesteps = _rt_no_sigmas
+
+    # Enable bf16 + native VAE tiling (Diffusers)
+    try:
+        pipe.vae.to(device=device, dtype=torch_dtype)
+        if hasattr(pipe.vae, "enable_tiling"):
+            pipe.vae.enable_tiling()
+        print("VAE: native tiling ENABLED (bf16)")
+    except Exception as e:
+        print(f"VAE: native tiling not available ({e})")
+
+    # ---- DEBUG TIMERS (generate only) ----
+    def _wrap_timed(obj, name, label):
+        if not hasattr(type(obj), name):
+            return
+        orig = getattr(type(obj), name)
+
+        def _timed(self, *args, **kwargs):
+            t = time.perf_counter()
+            print(f"CLI: {label} start", flush=True)
+            try:
+                return orig(self, *args, **kwargs)
+            finally:
+                print(f"CLI: {label} done {time.perf_counter()-t:.2f}s", flush=True)
+
+        setattr(obj, name, _timed.__get__(obj, type(obj)))
+
+    def _wrap_timed_static(obj, name, label):
+        if not hasattr(obj, name):
+            return
+        orig = getattr(obj, name)
+
+        def _timed(*args, **kwargs):
+            t = time.perf_counter()
+            print(f"CLI: {label} start", flush=True)
+            try:
+                return orig(*args, **kwargs)
+            finally:
+                print(f"CLI: {label} done {time.perf_counter()-t:.2f}s", flush=True)
+
+        setattr(obj, name, _timed)
+
+    _wrap_timed(pipe, "encode_prompt", "encode_prompt")
+    _wrap_timed(pipe, "prepare_latents", "prepare_latents")
+    _wrap_timed_static(pipe, "_unpack_latents", "unpack_latents")
+    _wrap_timed(pipe.vae, "decode", "vae_decode")
+    _wrap_timed(pipe.scheduler, "set_timesteps", "set_timesteps")
+    _wrap_timed(pipe.text_encoder, "forward", "text_encoder_forward")
+    # ---- END DEBUG TIMERS ----
+
+    pipe.set_progress_bar_config(
+        disable=False, leave=True, miniters=1  # keep the final bar
+    )
+    _print_stage("Pipeline ready on device")
+
+    # Apply custom LoRA if specified
+    if args.lora:
+        print(f"Loading custom LoRA: {args.lora}")
+        custom_lora_path = get_custom_lora_path(args.lora)
+        if custom_lora_path:
+            pipe = merge_lora_from_safetensors(pipe, custom_lora_path)
+        else:
+            print("Warning: Could not load custom LoRA, continuing without it...")
+
+    # Apply Lightning LoRA if fast or ultra-fast mode is enabled
+    if args.ultra_fast:
+        print("Loading Lightning LoRA v1.0 for ultra-fast generation...")
+        lora_path = get_lora_path(ultra_fast=True)
+        if lora_path:
+            pipe = merge_lora_from_safetensors(pipe, lora_path)
+            num_steps = 4
+            cfg_scale = 1.0
+            print(f"Ultra-fast mode enabled: {num_steps} steps, CFG scale {cfg_scale}")
+        else:
+            print("Warning: Could not load Lightning LoRA v1.0")
+            print("Falling back to normal generation...")
+            num_steps = args.steps
+            cfg_scale = 4.0
+    elif args.fast:
+        print("Loading Lightning LoRA v1.1 for fast generation...")
+        lora_path = get_lora_path(ultra_fast=False)
+        if lora_path:
+            pipe = merge_lora_from_safetensors(pipe, lora_path)
+            num_steps = 8
+            cfg_scale = 1.0
+            print(f"Fast mode enabled: {num_steps} steps, CFG scale {cfg_scale}")
+        else:
+            print("Warning: Could not load Lightning LoRA v1.1")
+            print("Falling back to normal generation...")
+            num_steps = args.steps
+            cfg_scale = 4.0
+    else:
+        num_steps = args.steps
+        cfg_scale = 4.0
+
+    # LEGO Batman photobomb mode!
+    if args.batman:
+        import random
+
+        batman_additions = [
+            ", with a tiny LEGO Batman minifigure photobombing in the corner doing a dramatic cape pose",
+            ", featuring a small LEGO Batman minifigure sneaking into the frame from the side",
+            ", and a miniature LEGO Batman figure peeking from behind something",
+            ", with a tiny LEGO Batman minifigure in the background striking a heroic pose",
+            ", including a small LEGO Batman figure hanging upside down from the top of the frame",
+            ", with a tiny LEGO Batman minifigure doing the Batusi dance in the corner",
+            ", and a small LEGO Batman figure photobombing with jazz hands",
+            ", featuring a miniature LEGO Batman popping up from the bottom like 'I'm Batman!'",
+            ", with a tiny LEGO Batman minifigure sliding into frame on a grappling hook",
+            ", and a small LEGO Batman figure in the distance shouting 'WHERE ARE THEY?!'",
+        ]
+        print("\n🦇 BATMAN MODE ACTIVATED: Adding surprise LEGO Batman photobomb!")
+
+    negative_prompt = " "
+    aspect_ratios = {
+        "1:1": (1328, 1328),
+        "16:9": (1664, 928),
+        "9:16": (928, 1664),
+        "4:3": (1472, 1140),
+        "3:4": (1140, 1472),
+        "3:2": (1584, 1056),
+        "2:3": (1056, 1584),
+    }
+    sel = getattr(args, "size", "16:9")
+    width, height = aspect_ratios.get(sel, aspect_ratios["16:9"])
+
+    # Ensure we generate at least one image
+    num_images = max(1, int(args.num_images))
+    _print_stage(
+        f"Generation config: steps={num_steps}, cfg={cfg_scale}, size={sel}, images={num_images}"
+    )
+
+    _print_stage(f"{num_steps} steps, CFG scale {cfg_scale}")
+
+    # Shared timestamp for this generation batch
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    saved_paths = []
+
+    for image_index in range(num_images):
+        if args.seed is not None:
+            per_image_seed = int(args.seed) + image_index
+        else:
+            per_image_seed = secrets.randbits(63)
+
+        current_prompt = args.prompt
+        if args.batman:
+            import random
+
+            batman_action = random.choice(batman_additions)
+            current_prompt = current_prompt + batman_action
+            if num_images > 1:
+                print(
+                    f"  Image {image_index + 1}: Using Batman variant - {batman_action[2:50]}..."
+                )
+
+        generator = create_generator(device, per_image_seed)
+        _print_stage(f"Invoking pipeline (image {image_index+1}/{num_images})")
+        _print_stage("Denoising started")
+        with _patch_diffusers_progress():
+            image = pipe(
+                prompt=current_prompt,
+                negative_prompt=negative_prompt,
+                width=width,
+                height=height,
+                num_inference_steps=num_steps,
+                true_cfg_scale=cfg_scale,
+                generator=generator,
+            ).images[0]
+
+        # Save with timestamp to avoid overwriting previous generations + PNG metadata
+        output_dir = get_output_dir()
+        suffix = f"-{image_index+1}" if num_images > 1 else ""
+        output_filename = str(output_dir / f"image-{timestamp}{suffix}.png")
+
+        meta = PngInfo()
+        meta.add_text("qim:command", _full_command_line())
+        meta.add_text("qim:prompt", current_prompt)
+        meta.add_text("qim:negative_prompt", negative_prompt)
+        meta.add_text("qim:steps", str(num_steps))
+        meta.add_text("qim:cfg_scale", str(cfg_scale))
+        meta.add_text(
+            "qim:mode",
+            "ultra-fast" if args.ultra_fast else ("fast" if args.fast else "normal"),
+        )
+        meta.add_text("qim:seed", str(per_image_seed))
+        meta.add_text("qim:timestamp", timestamp)
+        meta.add_text("qim:model", "Qwen/Qwen-Image")
+        meta.add_text("qim:size", f"{width}x{height}")
+
+        _print_stage(f"Saving image ({image_index+1}/{num_images}): {output_filename}")
+        image.save(output_filename, pnginfo=meta)
+        saved_paths.append(os.path.abspath(output_filename))
+
+    # Print full path(s) of saved image(s)
+    if len(saved_paths) == 1:
+        print(f"\nImage saved to: {saved_paths[0]}")
+    else:
+        print("\nImages saved:")
+        for path in saved_paths:
+            print(f"- {path}")
+
+
+def edit_image(args) -> None:
+    from diffusers import QwenImageEditPipeline
+    from PIL import Image
+
+    device, torch_dtype = get_device_and_dtype()
+
+    print("Loading Qwen-Image-Edit model for image editing...")
+    torch.set_default_device(device)
+
+    pipeline = QwenImageEditPipeline.from_pretrained(
+        "Qwen/Qwen-Image-Edit",
+        torch_dtype=torch_dtype,
+        use_safetensors=True,
+        device_map=device,
+    )
+    from diffusers.pipelines.qwenimage import pipeline_qwenimage_edit as _qime
+
+    _qime.retrieve_timesteps = _rt_no_sigmas
+
+    # ---- Make encoding use SPDA MATH path (edit only) ----
+    from torch.nn.attention import sdpa_kernel, SDPBackend
+
+    orig_encode = pipeline.encode_prompt
+    def _encode_with_math(*a, **k):
+        with sdpa_kernel(SDPBackend.MATH):
+            return orig_encode(*a, **k)
+
+    pipeline.encode_prompt = _encode_with_math
+    print("EDIT: text encoder -> SDPA MATH")
+    # -------------------------------------------------- #
+
+    # ---- DEBUG TIMERS (edit only) ----
+    def _wrap_timed(obj, name, label):
+        # safe: only wrap if the method exists
+        if not hasattr(type(obj), name):
+            return
+        orig = getattr(type(obj), name)
+
+        def _timed(self, *args, **kwargs):
+            t = time.perf_counter()
+            print(f"CLI: {label} start", flush=True)
+            try:
+                return orig(self, *args, **kwargs)
+            finally:
+                print(f"CLI: {label} done {time.perf_counter()-t:.2f}s", flush=True)
+
+        setattr(obj, name, _timed.__get__(obj, type(obj)))
+
+    _wrap_timed(pipeline, "encode_prompt", "encode_prompt")
+    _wrap_timed(pipeline, "_encode_vae_image", "vae_encode")
+    _wrap_timed(pipeline.vae, "decode", "vae_decode")
+    _wrap_timed(pipeline.image_processor, "resize", "img_resize")
+    _wrap_timed(pipeline.image_processor, "preprocess", "img_preprocess")
+    _wrap_timed(pipeline.scheduler, "set_timesteps", "set_timesteps")
+    _wrap_timed(pipeline.text_encoder, "forward", "text_encoder_forward")
+    # ---- END DEBUG TIMERS ----
+
+    try:
+        pipeline.enable_sdpa()
+    except Exception:
+        try:
+            from diffusers.models.attention_processor import AttnProcessor2_0
+
+            pipeline.set_attn_processor(AttnProcessor2_0())
+        except Exception:
+            pass
+
+    # ---- VAE: match generate path (fast) ----
+    pipeline.vae.to(device=device, dtype=torch.bfloat16)
+    if hasattr(pipeline.vae, "enable_tiling"):
+        pipeline.vae.enable_tiling()
+    print(
+        f"Edit VAE: {pipeline.vae.dtype} tiling={getattr(pipeline.vae,'use_tiling',None)}"
+    )
+
+    # Hard guard: ensure tiling stays ON for decode
+    _orig_decode = type(pipeline.vae).decode
+
+    def _decode_guard(self, *a, **k):
+        if not getattr(self, "use_tiling", False):
+            self.enable_tiling()
+        return _orig_decode(self, *a, **k)
+
+    pipeline.vae.decode = _decode_guard.__get__(pipeline.vae, type(pipeline.vae))
+
+    # Run VAE.encode under bf16 autocast, ensure input matches VAE device
+    # Timed + autocast VAE encode
+    _orig_vae_encode = type(pipeline)._encode_vae_image
+
+    def _vae_encode_timed_autocast(self, image, generator):
+        import time
+
+        import torch
+
+        t = time.perf_counter()
+        print("CLI: vae_encode start", flush=True)
+        try:
+            image = image.to(
+                device=self.vae.device, dtype=torch.float32, non_blocking=True
+            ).contiguous()
+            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                return _orig_vae_encode(self, image, generator)
+        finally:
+            print(f"CLI: vae_encode done {time.perf_counter()-t:.2f}s", flush=True)
+
+    pipeline._encode_vae_image = _vae_encode_timed_autocast.__get__(
+        pipeline, type(pipeline)
+    )
+
+    # (optional single-line proof)
+    print(
+        "EDIT VAE:",
+        next(pipeline.vae.parameters()).dtype,
+        next(pipeline.vae.parameters()).device,
+        flush=True,
+    )
+
+    pipeline.set_progress_bar_config(
+        disable=False,
+        leave=True,
+        miniters=1,
+        desc="Denoising",
+    )
+    _print_stage("Edit pipeline ready on device")
+
+    # Apply custom LoRA if specified
+    if args.lora:
+        print(f"Loading custom LoRA: {args.lora}")
+        custom_lora_path = get_custom_lora_path(args.lora)
+        if custom_lora_path:
+            pipeline = merge_lora_from_safetensors(pipeline, custom_lora_path)
+        else:
+            print("Warning: Could not load custom LoRA, continuing without it...")
+
+    # Apply Lightning LoRA if fast or ultra-fast mode is enabled
+    if args.ultra_fast:
+        print("Loading Lightning LoRA v1.0 for ultra-fast editing...")
+        lora_path = get_lora_path(ultra_fast=True)
+        if lora_path:
+            pipeline = merge_lora_from_safetensors(pipeline, lora_path)
+            num_steps = 4
+            cfg_scale = 1.0
+            print(f"Ultra-fast mode enabled: {num_steps} steps, CFG scale {cfg_scale}")
+        else:
+            print("Warning: Could not load Lightning LoRA v1.0")
+            print("Falling back to normal editing...")
+            num_steps = args.steps
+            cfg_scale = 4.0
+    elif args.fast:
+        print("Loading Lightning LoRA v1.1 for fast editing...")
+        lora_path = get_lora_path(ultra_fast=False)
+        if lora_path:
+            pipeline = merge_lora_from_safetensors(pipeline, lora_path)
+            num_steps = 8
+            cfg_scale = 1.0
+            print(f"Fast mode enabled: {num_steps} steps, CFG scale {cfg_scale}")
+        else:
+            print("Warning: Could not load Lightning LoRA v1.1")
+            print("Falling back to normal editing...")
+            num_steps = args.steps
+            cfg_scale = 4.0
+    else:
+        num_steps = args.steps
+        cfg_scale = 4.0
+
+    # Load input image
+    try:
+        image = Image.open(args.input).convert("RGB")
+        print(f"Loaded input image: {args.input} ({image.size[0]}x{image.size[1]})")
+    except Exception as e:
+        print(f"Error loading input image: {e}")
+        return
+
+    # Set up generation parameters
+    seed = args.seed if args.seed is not None else secrets.randbits(63)
+    generator = create_generator(device, seed)
+
+    # Modify prompt for Batman photobomb mode
+    edit_prompt = args.prompt
+    if args.batman:
+        import random
+
+        batman_edits = [
+            " Also add a tiny LEGO Batman minifigure photobombing somewhere unexpected.",
+            " Include a small LEGO Batman figure sneaking into the scene.",
+            " Add a miniature LEGO Batman peeking from an edge.",
+            " Put a tiny LEGO Batman minifigure doing something heroic in the background.",
+            " Add a small LEGO Batman figure photobombing with a dramatic pose.",
+            " Include a tiny LEGO Batman minifigure who looks like he's saying 'I'm Batman!'",
+            " Add a miniature LEGO Batman swinging on a tiny grappling hook.",
+            " Include a small LEGO Batman figure doing the Batusi dance.",
+            " Add a tiny LEGO Batman minifigure brooding mysteriously in a corner.",
+            " Put a small LEGO Batman photobombing like he's protecting Gotham.",
+        ]
+        batman_edit = random.choice(batman_edits)
+        edit_prompt = args.prompt + batman_edit
+        print("\n🦇 BATMAN MODE ACTIVATED: LEGO Batman will photobomb this edit!")
+
+    print(f"Editing image with prompt: {edit_prompt}")
+    print(f"Using {num_steps} inference steps...")
+
+    _print_stage(f"Editing config: steps={num_steps}, cfg={cfg_scale}")
+
+    def _edit_progress_cb(step, *_, **__):
+        pct = int((step + 1) * 100 // max(1, num_steps))
+        if getattr(_edit_progress_cb, "_last", -1) != pct:
+            print(f"CLI: denoise {pct}%", flush=True)
+            _edit_progress_cb._last = pct
+
+    pipeline.set_progress_bar_config(
+        disable=False, leave=True, miniters=1, desc="Denoising"
+    )
+
+    _print_stage("Invoking edit pipeline")
+    _print_stage("Denoising started")
+    with _patch_diffusers_progress():
+        edited_image = pipeline(
+            image=image,
+            prompt=edit_prompt,
+            negative_prompt=" ",
+            num_inference_steps=num_steps,
+            generator=generator,
+            guidance_scale=cfg_scale,
+        ).images[0]
+    _print_stage("Denoising finished")
+
+    if args.output:
+        # If user specified output, respect it but ensure directory exists
+        output_path = Path(args.output)
+        if not output_path.is_absolute():
+            # Relative path, put it in our default directory
+            output_dir = get_output_dir()
+            output_filename = str(output_dir / args.output)
+        else:
+            # Absolute path, use as-is but ensure parent dir exists
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_filename = str(output_path)
+    else:
+        # Default to our directory
+        output_dir = get_output_dir()
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        output_filename = str(output_dir / f"edited-{timestamp}.png")
+
+    meta = PngInfo()
+    meta.add_text("qim:command", _full_command_line())
+    meta.add_text("qim:prompt", edit_prompt)
+    meta.add_text("qim:negative_prompt", " ")
+    meta.add_text("qim:steps", str(num_steps))
+    meta.add_text("qim:cfg_scale", str(cfg_scale))
+    meta.add_text(
+        "qim:mode",
+        "ultra-fast" if args.ultra_fast else ("fast" if args.fast else "normal"),
+    )
+    meta.add_text("qim:seed", str(seed))
+    meta.add_text("qim:timestamp", timestamp)
+    meta.add_text("qim:model", "Qwen/Qwen-Image-Edit")
+
+    edited_image.save(output_filename, pnginfo=meta)
+    print(f"\nEdited image saved to: {os.path.abspath(output_filename)}")
+
+
+def main() -> None:
+    try:
+        from . import __version__
+    except ImportError:
+        # Fallback when module is loaded without package context
+        __version__ = "0.4.2"
+
+    parser = argparse.ArgumentParser(
+        description="Qwen-Image MPS - Generate and edit images with Qwen models on Apple Silicon",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    parser.add_argument(
+        "--no-mmap",
+        action="store_true",
+        help="Disable memory-mapped loading (fix ROCm/Strix Halo issues).",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"qwen-image-mps {__version__}",
+    )
+
+    # Create subparsers for different commands
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # Add generate, edit and download subcommands
+    build_generate_parser(subparsers)
+    build_edit_parser(subparsers)
+    build_download_parser(subparsers)
+
+    args = parser.parse_args()
+
+    # Handle the command
+    if args.command == "generate":
+        generate_image(args)
+    elif args.command == "edit":
+        edit_image(args)
+    elif args.command == "download":
+        download_models(args)
+    else:
+        # Default to generate for backward compatibility if no subcommand
+        # This allows the old style invocation to still work
+        import sys
+
+        if len(sys.argv) > 1 and sys.argv[1] not in [
+            "generate",
+            "edit",
+            "-h",
+            "--help",
+        ]:
+            # Parse as generate command for backward compatibility
+            sys.argv.insert(1, "generate")
+            args = parser.parse_args()
+            generate_image(args)
+        else:
+            parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

@@ -55,8 +55,9 @@ WORKDIR /opt
 # Pin specific transformers version
 RUN python -m pip install gguf transformers==4.56.2
 
-# ComfyUI
-RUN git clone --depth=1 https://github.com/comfyanonymous/ComfyUI.git /opt/ComfyUI 
+# ComfyUI — copied from our vendored source (see vendor.sh / vendor/), not cloned
+# at build time, so the image is built entirely from sources we own.
+COPY vendor/ComfyUI /opt/ComfyUI
 WORKDIR /opt/ComfyUI
 RUN python -m pip install -r requirements.txt && \
     python -m pip install --prefer-binary \
@@ -68,22 +69,22 @@ COPY workflows/input/example2.jpg /opt/ComfyUI/input/
 
 COPY workflows/*.json /opt/ComfyUI/user/default/workflows/
 
-# ComfyUI plugins
-WORKDIR /opt/ComfyUI/custom_nodes
-RUN git clone --depth=1 https://github.com/cubiq/ComfyUI_essentials /opt/ComfyUI/custom_nodes/ComfyUI_essentials 
-RUN git clone --depth=1 https://github.com/kyuz0/ComfyUI-AMDGPUMonitor /opt/ComfyUI/custom_nodes/ComfyUI-AMDGPUMonitor 
-RUN git clone --depth=1 https://github.com/city96/ComfyUI-GGUF /opt/ComfyUI/custom_nodes/ComfyUI-GGUF 
+# ComfyUI plugins (vendored)
+COPY vendor/custom_nodes/ComfyUI_essentials      /opt/ComfyUI/custom_nodes/ComfyUI_essentials
+COPY vendor/custom_nodes/ComfyUI-AMDGPUMonitor   /opt/ComfyUI/custom_nodes/ComfyUI-AMDGPUMonitor
+COPY vendor/custom_nodes/ComfyUI-GGUF            /opt/ComfyUI/custom_nodes/ComfyUI-GGUF
+RUN python -m pip install -r /opt/ComfyUI/custom_nodes/ComfyUI-GGUF/requirements.txt || true
 
-# Qwen Image Studio
+# Qwen Image Studio (vendored)
 WORKDIR /opt
-RUN git clone --depth=1 https://github.com/kyuz0/qwen-image-studio /opt/qwen-image-studio && \
-    python -m pip install -r /opt/qwen-image-studio/requirements.txt
+COPY vendor/qwen-image-studio /opt/qwen-image-studio
+RUN python -m pip install -r /opt/qwen-image-studio/requirements.txt
 
-# Wan Video Studio
-RUN git clone --depth=1 https://github.com/kyuz0/wan-video-studio /opt/wan-video-studio && \
-    python -m pip install --prefer-binary \
+# Wan Video Studio (vendored)
+COPY vendor/wan-video-studio /opt/wan-video-studio
+RUN python -m pip install --prefer-binary \
     opencv-python-headless diffusers tokenizers accelerate \
-    imageio[ffmpeg] easydict ftfy dashscope imageio-ffmpeg decord librosa 
+    imageio[ffmpeg] easydict ftfy dashscope imageio-ffmpeg decord librosa
 
 # Permissions & trims (keep compilers/headers)
 RUN chmod -R a+rwX /opt && chmod +x /opt/*.sh || true && \
