@@ -96,13 +96,25 @@ deadsnakes PPA** and builds the venv from it.
 
 > Do **not** switch the Dockerfile to the system `python3`: there's no cp314
 > torch wheel for gfx1151 and the `pip install ... torch` step will fail to
-> resolve. The gfx1151 nightly index ships cp313 wheels (verified: torch 2.10.0).
-> If a future ROCm nightly ships cp314 wheels, bump the deadsnakes package and
-> the `python3.13` references together.
+> resolve. The gfx1151 nightly index ships cp313 wheels. If a future ROCm
+> nightly ships cp314 wheels, bump the deadsnakes package and the `python3.13`
+> references together.
 
-The base image layer (`ubuntu:26.04` → deadsnakes → python3.13 venv) is
-build-tested and yields Python 3.13.x in `/opt/venv`. The ROCm/PyTorch and
-ComfyUI layers require the real gfx1151 hardware to exercise.
+## The ROCm channel pin (important)
+
+The Dockerfile pulls torch from the **`v2`** gfx1151 index
+(`https://rocm.nightlies.amd.com/v2/gfx1151`, ROCm **7.13**), **not** `v2-staging`.
+This was hardware-validated: on a Ryzen AI Max+ 395 (gfx1151, kernel 7.0) the
+`v2-staging` ROCm **7.14** build **segfaults in ROCr agent enumeration**
+(`torch.cuda.is_available()` and `rocminfo` crash with SIGSEGV), while the `v2`
+ROCm 7.13 build (`torch 2.11.0+rocm7.13`) runs correctly — `torch.cuda` sees the
+Radeon 8060S and ComfyUI generates. No `HSA_OVERRIDE_GFX_VERSION` is needed with
+the 7.13 build (the wheel is gfx1151-native). If a future `v2` build regresses,
+pin a known-good rocm7.13 wheel in the Dockerfile.
+
+The full stack (ROCm/PyTorch + ComfyUI) is now **hardware-validated on gfx1151**:
+image builds, the distrobox starts with GPU passthrough, `torch.cuda.is_available()`
+is True, and ComfyUI serves on :8000 with `Device: cuda:0 Radeon 8060S Graphics`.
 
 ---
 

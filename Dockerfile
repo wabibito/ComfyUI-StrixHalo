@@ -54,9 +54,15 @@ RUN printf '#!/usr/bin/env bash\nexec python /opt/model_manager.py "$@"\n' > /op
     && chmod 0755 /opt/venv/bin/start_comfy_ui /opt/venv/bin/model_manager
 
 
-# ROCm + PyTorch (TheRock, include torchaudio for resolver; remove later)
+# ROCm + PyTorch (TheRock, include torchaudio for resolver; remove later).
+# Use the v2 (stable nightly) index, NOT v2-staging: on this hardware the
+# v2-staging ROCm 7.14 build segfaults in ROCr agent enumeration
+# (torch.cuda.is_available() / rocminfo crash), while the v2 ROCm 7.13 builds
+# run correctly on the gfx1151 iGPU (verified: torch 2.11.0+rocm7.13 runs Evo 2
+# on this exact machine). If a future v2 build regresses, pin a known-good
+# rocm7.13 wheel here.
 RUN python -m pip install \
-    --index-url https://rocm.nightlies.amd.com/v2-staging/gfx1151 \
+    --index-url https://rocm.nightlies.amd.com/v2/gfx1151 \
     --pre torch torchaudio torchvision
 
 WORKDIR /opt
