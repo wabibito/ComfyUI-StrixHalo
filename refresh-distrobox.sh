@@ -45,8 +45,13 @@ done
 
 IMAGE="${REPO}:${CHANNEL}"
 
-# GPU passthrough flags (AMD ROCm devices + render/video groups).
-OPTIONS="--device /dev/dri --device /dev/kfd --group-add video --group-add render --security-opt seccomp=unconfined"
+# GPU passthrough flags (AMD ROCm devices + host supplementary groups).
+# Use `keep-groups` rather than naming render/video: rootless podman resolves
+# --group-add NAMES against the *container's* group file (where "render" often
+# doesn't exist) and refuses to start. keep-groups carries the host's
+# /dev/kfd + /dev/dri access (device ACLs and any render/video membership)
+# into the container, which is what actually grants ROCm access.
+OPTIONS="--device /dev/dri --device /dev/kfd --group-add keep-groups --security-opt seccomp=unconfined"
 
 # --- Require distrobox + podman ---
 if ! command -v distrobox &>/dev/null; then
