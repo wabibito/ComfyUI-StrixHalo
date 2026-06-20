@@ -33,26 +33,9 @@ ENV PIP_NO_CACHE_DIR=1
 RUN printf 'source /opt/venv/bin/activate\n' > /etc/profile.d/venv.sh
 RUN python -m pip install --upgrade pip setuptools wheel
 
-# Helper scripts (ComfyUI-only)
-COPY scripts/get_wan22.sh /opt/
-COPY scripts/set_extra_paths.sh /opt/
-COPY scripts/get_qwen_image.sh /opt/
-COPY scripts/get_hunyuan15.sh /opt/
-COPY scripts/get_ltx2.sh /opt/
-COPY scripts/benchmark_workflows.py /opt/
-COPY scripts/collect_perf_logs.py /opt/
-COPY scripts/model_manager.py /opt/
-COPY scripts/smoke-test.sh /opt/
-COPY workflows/API /opt/comfy-workflows
-
-# Expose user-facing commands on PATH (/opt/venv/bin is on PATH).
-#   start_comfy_ui : real executable (works in non-interactive shells too,
-#                    e.g. `distrobox enter comfyui-strixhalo -- start_comfy_ui`)
-#   model_manager  : thin wrapper around /opt/model_manager.py
-COPY scripts/start_comfy_ui /opt/venv/bin/start_comfy_ui
-RUN printf '#!/usr/bin/env bash\nexec python /opt/model_manager.py "$@"\n' > /opt/venv/bin/model_manager \
-    && chmod 0755 /opt/venv/bin/start_comfy_ui /opt/venv/bin/model_manager
-
+# NOTE: helper scripts + user-facing commands are COPY'd LAST (just before the
+# permissions step), so editing a script does not invalidate the expensive
+# ROCm/PyTorch/ComfyUI/studio layers — script tweaks then rebuild in seconds.
 
 # ROCm + PyTorch (TheRock, include torchaudio for resolver; remove later).
 # Use the v2 (stable nightly) index, NOT v2-staging: on this hardware the
@@ -101,6 +84,25 @@ COPY vendor/wan-video-studio /opt/wan-video-studio
 RUN python -m pip install --prefer-binary \
     opencv-python-headless diffusers tokenizers accelerate \
     "imageio[ffmpeg]" easydict ftfy dashscope imageio-ffmpeg decord librosa
+
+# Helper scripts + user-facing commands (COPY'd late so script edits don't bust
+# the heavy layers above). model_manager is a thin wrapper around model_manager.py;
+# start_comfy_ui is a real executable on PATH (works in non-interactive shells:
+# `distrobox enter comfyui-strixhalo -- start_comfy_ui`).
+COPY scripts/get_wan22.sh /opt/
+COPY scripts/set_extra_paths.sh /opt/
+COPY scripts/get_qwen_image.sh /opt/
+COPY scripts/get_ideogram4.sh /opt/
+COPY scripts/get_hunyuan15.sh /opt/
+COPY scripts/get_ltx2.sh /opt/
+COPY scripts/benchmark_workflows.py /opt/
+COPY scripts/collect_perf_logs.py /opt/
+COPY scripts/model_manager.py /opt/
+COPY scripts/smoke-test.sh /opt/
+COPY workflows/API /opt/comfy-workflows
+COPY scripts/start_comfy_ui /opt/venv/bin/start_comfy_ui
+RUN printf '#!/usr/bin/env bash\nexec python /opt/model_manager.py "$@"\n' > /opt/venv/bin/model_manager \
+    && chmod 0755 /opt/venv/bin/start_comfy_ui /opt/venv/bin/model_manager
 
 # Permissions & trims (keep compilers/headers)
 RUN chmod -R a+rwX /opt && chmod +x /opt/*.sh || true && \
