@@ -72,6 +72,9 @@ COPY vendor/custom_nodes/ComfyUI_essentials      /opt/ComfyUI/custom_nodes/Comfy
 COPY vendor/custom_nodes/ComfyUI-AMDGPUMonitor   /opt/ComfyUI/custom_nodes/ComfyUI-AMDGPUMonitor
 COPY vendor/custom_nodes/ComfyUI-GGUF            /opt/ComfyUI/custom_nodes/ComfyUI-GGUF
 RUN python -m pip install -r /opt/ComfyUI/custom_nodes/ComfyUI-GGUF/requirements.txt || true
+# Ideogram 4 Prompt Builder KJ (V1) — vendored subset of kijai/ComfyUI-KJNodes,
+# the visual JSON-caption builder. Self-contained (no extra pip deps).
+COPY vendor/custom_nodes/ComfyUI-Ideogram4Builder-KJ /opt/ComfyUI/custom_nodes/ComfyUI-Ideogram4Builder-KJ
 
 # Qwen Image Studio (vendored)
 WORKDIR /opt

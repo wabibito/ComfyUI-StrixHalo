@@ -25,6 +25,8 @@ each `.vendor-source` file records the exact source URL and commit pinned.
 | ComfyUI-GGUF | https://github.com/city96/ComfyUI-GGUF | Apache-2.0 |
 | qwen-image-studio | https://github.com/kyuz0/qwen-image-studio | MIT — © Ivan Fioravanti |
 | wan-video-studio | https://github.com/kyuz0/wan-video-studio | Apache-2.0 |
+| Ideogram 4 Prompt Builder KJ (subset) | https://github.com/kijai/ComfyUI-KJNodes | GPL-3.0 — © Kijai |
+| FreeMono.ttf (bundled w/ the above) | GNU FreeFont | GPL-3.0 with font exception |
 
 All trademarks (AMD, Ryzen, Radeon, Ubuntu, etc.) belong to their respective
 owners. This project is not affiliated with or endorsed by AMD, Canonical,

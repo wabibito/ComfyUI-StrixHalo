@@ -1,0 +1,8 @@
+component: Ideogram 4 Prompt Builder KJ (V1)
+origin: https://github.com/kijai/ComfyUI-KJNodes
+commit: 5e6e730d0ca8 (2026-06-15)
+files: nodes/ideogram4_nodes.py, web/js/ideogram4_prompt_builder.js, fonts/FreeMono.ttf
+license: GPL-3.0-or-later (KJNodes); FreeMono.ttf is GNU FreeFont (GPL with font exception)
+note: Vendored subset (the single Ideogram node), not the full KJNodes pack. The
+      node is self-contained; no KJNodes-internal imports. V2 (freehand canvas)
+      was an unmerged PR at vendor time and is intentionally not included.

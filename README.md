@@ -20,7 +20,9 @@ outputs live in your home directory and persist across rebuilds.
 
 - **`Dockerfile`** — `ubuntu:26.04` base, ROCm nightlies (TheRock, gfx1151) +
   PyTorch, ComfyUI with `ComfyUI_essentials`, `ComfyUI-AMDGPUMonitor`,
-  `ComfyUI-GGUF`, plus Qwen Image Studio and Wan Video Studio.
+  `ComfyUI-GGUF`, the **Ideogram 4 Prompt Builder KJ** node (visual canvas that
+  authors Ideogram's structured JSON caption, so you don't hand-write it), plus
+  Qwen Image Studio and Wan Video Studio.
 - **`scripts/`** — `model_manager` and `start_comfy_ui` (both installed as real
   commands on PATH, so they work in interactive *and* non-interactive shells),
   `set_extra_paths.sh`, per-model fetchers (`get_qwen_image.sh`, `get_wan22.sh`,
