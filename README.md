@@ -28,7 +28,8 @@ outputs live in your home directory and persist across rebuilds.
   `start_comfy_ui` carries the Strix-Halo-critical flags
   (`--disable-mmap --cache-none --bf16-vae --gpu-only --disable-smart-memory`).
 - **`workflows/`** — ready-to-load ComfyUI workflows for Qwen Image / Edit,
-  Wan 2.2, HunyuanVideo 1.5, and LTX2.
+  **Ideogram 4.0** (9.3B open-weight text-to-image), Wan 2.2, HunyuanVideo 1.5,
+  and LTX2.
 - **`vendor/`** — our own snapshot of every build-time source dependency
   (ComfyUI + the three custom nodes + both studios), so the image is built
   entirely from sources we control rather than cloned from third-party accounts
@@ -54,31 +55,43 @@ outputs live in your home directory and persist across rebuilds.
 
 ## Quick start
 
+One command does the host setup, kernel params, image build, and container
+creation — and it's **re-runnable**: the two steps that need a reboot/re-login
+(GPU groups, kernel params) make it pause and tell you; just run it again after:
+
 ```bash
-# 1. One-time host bootstrap (podman, distrobox, GPU groups, rootless setup)
-./host-setup-ubuntu.sh
-#    Then LOG OUT and back in (or reboot) so the render/video groups apply.
+./install.sh
+```
 
-# 2. One-time unified-memory kernel params (then reboot)
-./setup-kernel-ubuntu.sh           # auto-sizes from your RAM; --dry-run to preview
-sudo reboot
+Then everything else (ROCm, PyTorch, ComfyUI, custom nodes, the studios,
+workflows, tuned launch flags, model-path wiring) is already baked into the
+image. Inside the container you only download the model weights and launch:
 
-# 3. Build the container image locally (long first build, several GB)
-./build-image.sh                   # -> localhost/comfyui-strixhalo:latest
-
-# 4. Create the distrobox and enter it
-./refresh-distrobox.sh             # creates the container from your local image
+```bash
 distrobox enter comfyui-strixhalo
-
-# 5. Inside the container — first-time model setup, then launch
-/opt/set_extra_paths.sh            # writes extra_model_paths.yaml -> ~/comfy-models
-model_manager                      # TUI to download model weights
-start_comfy_ui                     # serves http://localhost:8000
+model_manager        # TUI: pick a model family (Qwen, Wan, Ideogram 4, …) to download
+start_comfy_ui       # serves http://localhost:8000  (auto-wires model paths)
 ```
 
 Open <http://localhost:8000>. Outputs land in `~/comfy-outputs`, models in
 `~/comfy-models` — both in your **host** home directory (distrobox shares
-`$HOME`), so they survive container rebuilds.
+`$HOME`), so they survive container rebuilds. The model weights are the **only**
+large, separate download; nothing else is fetched at run time.
+
+<details><summary>Prefer the individual steps?</summary>
+
+```bash
+./host-setup-ubuntu.sh      # podman, distrobox, GPU groups, rootless setup → re-login
+./setup-kernel-ubuntu.sh    # unified-memory kernel params (--dry-run to preview) → reboot
+./build-image.sh            # build localhost/comfyui-strixhalo:latest (long, ~15 GB)
+./refresh-distrobox.sh      # create the distrobox from the image
+```
+</details>
+
+> **Verifying on real hardware?** Follow [docs/TESTING.md](docs/TESTING.md) — a
+> phased checklist from host setup through GPU visibility to per-workflow
+> generation. Inside the container, `/opt/smoke-test.sh` runs the mechanical
+> checks (venv, ROCm/torch GPU access, ComfyUI startup) and prints pass/fail.
 
 > **Verifying on real hardware?** Follow [docs/TESTING.md](docs/TESTING.md) — a
 > phased checklist from host setup through GPU visibility to per-workflow

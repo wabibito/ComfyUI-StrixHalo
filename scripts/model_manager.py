@@ -84,6 +84,23 @@ MODEL_FAMILIES = [
         ]
     },
 
+    # --- Ideogram 4.0 (open weights, text-to-image) ---
+    {
+        "name": "Ideogram 4.0 (9.3B text-to-image)",
+        "keywords": ["Ideogram4"],
+        "script": "get_ideogram4.sh",
+        "variants": [
+            {
+                "name": "FP8 (most tested)",
+                "args": ["fp8"]
+            },
+            {
+                "name": "NVFP4 (smaller disk / VRAM)",
+                "args": ["nvfp4"]
+            }
+        ]
+    },
+
     # --- Wan 2.2 ---
     {
         "name": "Wan 2.2 - Image to Video (14B)",

@@ -20,6 +20,15 @@ PORT="${COMFY_PORT:-8000}"
 OUTPUT_DIR="${COMFY_OUTPUT_DIR:-$HOME/comfy-outputs}"
 
 mkdir -p "$OUTPUT_DIR"
+
+# Self-configure model paths (idempotent) so models placed in ~/comfy-models are
+# found with no separate manual step. This must happen BEFORE ComfyUI starts —
+# ComfyUI reads extra_model_paths.yaml once at launch. Removes the old
+# "run /opt/set_extra_paths.sh first" footgun.
+if [[ -x /opt/set_extra_paths.sh ]]; then
+    /opt/set_extra_paths.sh >/dev/null 2>&1 || true
+fi
+
 cd "$COMFY_DIR"
 
 exec python main.py \
