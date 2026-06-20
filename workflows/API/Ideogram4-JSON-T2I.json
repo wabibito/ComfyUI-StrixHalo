@@ -1,0 +1,123 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "ideogram4_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_8b_fp8_scaled.safetensors",
+      "type": "ideogram4"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "{\"high_level_description\": \"A bold retro travel poster of a red panda astronaut planting a flag on Mars, clean flat vector art, vivid colors.\", \"style_description\": {\"aesthetics\": \"Mid-century travel poster, flat vector shapes, clean crisp lines.\", \"lighting\": \"Bright even graphic lighting.\", \"medium\": \"Vector illustration\", \"color_palette\": [\"#E2503B\", \"#F4C430\", \"#2B2D42\", \"#FFFFFF\", \"#8D99AE\"]}, \"compositional_deconstruction\": {\"background\": \"Deep red-orange Martian sky with a large pale sun and distant craters.\", \"elements\": [{\"type\": \"text\", \"bbox\": [60, 120, 250, 880], \"text\": \"VISIT MARS\", \"desc\": \"Large bold condensed sans-serif title in cream with a slight retro drop shadow.\"}, {\"type\": \"obj\", \"bbox\": [360, 320, 830, 690], \"desc\": \"A cute red panda in a white spacesuit holding a small flag, flat vector style.\"}, {\"type\": \"text\", \"bbox\": [860, 260, 950, 740], \"text\": \"IDEOGRAM 4\", \"desc\": \"Small uppercase tagline in yellow.\"}]}}",
+      "clip": [
+        "2",
+        0
+      ]
+    }
+  },
+  "5": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "conditioning": [
+        "4",
+        0
+      ]
+    }
+  },
+  "6": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 7
+    }
+  },
+  "7": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "euler"
+    }
+  },
+  "8": {
+    "class_type": "Ideogram4Scheduler",
+    "inputs": {
+      "steps": 20,
+      "width": 832,
+      "height": 1216,
+      "mu": 0.5,
+      "std": 1.75
+    }
+  },
+  "9": {
+    "class_type": "EmptyFlux2LatentImage",
+    "inputs": {
+      "width": 832,
+      "height": 1216,
+      "batch_size": 1
+    }
+  },
+  "10": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "6",
+        0
+      ],
+      "guider": [
+        "5",
+        0
+      ],
+      "sampler": [
+        "7",
+        0
+      ],
+      "sigmas": [
+        "8",
+        0
+      ],
+      "latent_image": [
+        "9",
+        0
+      ]
+    }
+  },
+  "11": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "10",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "12": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "11",
+        0
+      ],
+      "filename_prefix": "Ideogram4_JSON"
+    }
+  }
+}
