@@ -129,9 +129,14 @@ History, for the record: on a Ryzen AI Max+ 395 (gfx1151, kernel 7.0) the
 (`torch.cuda.is_available()` and `rocminfo` crashed with SIGSEGV), while the
 `v2` ROCm 7.13 build (`torch 2.11.0+rocm7.13`) ran correctly and was fully
 hardware-validated (GPU passthrough, `torch.cuda.is_available()` True, ComfyUI
-generating on `cuda:0 Radeon 8060S`). The multi-arch ROCm 10.x stack has
-**not yet been re-validated on this hardware** — if it regresses the same way,
-fall back to the last known-good per-arch pin in the Dockerfile:
+generating on `cuda:0 Radeon 8060S`). The multi-arch ROCm 10.x stack is
+**hardware-validated at host level on the same machine** (2026-08-16):
+`torch 2.15.0a0+rocm10.1.0a20260815` enumerates the gfx1151 agent — the exact
+call that crashed on 7.14 — and passes fp32/bf16 matmul, conv2d, and bf16
+scaled-dot-product-attention correctness checks on the Radeon 8060S (30.9 GB
+visible). In-container validation (full image build + ComfyUI generation) is
+the remaining step. If a future nightly regresses, fall back to the last
+known-good per-arch pin in the Dockerfile:
 
 ```dockerfile
 RUN python -m pip install \

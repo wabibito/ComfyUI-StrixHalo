@@ -45,8 +45,11 @@ RUN python -m pip install --upgrade pip setuptools wheel
 # The 7.14 staging build segfaulted in ROCr agent enumeration on this iGPU
 # (torch.cuda.is_available() / rocminfo crash); multi-arch is a later stack
 # (ROCm 10.x) with gfx1151 support supplied by the [device-gfx1151] extras.
-# NOT yet hardware-validated on this machine — if it regresses like 7.14 did,
-# fall back to the last known-good per-arch pin:
+# Hardware-validated on this machine (host-level, 2026-08-16): the exact
+# resolved stack (torch 2.15.0a0+rocm10.1.0a20260815, cp313) enumerates the
+# gfx1151 agent — where 7.14 segfaulted — and passes fp32/bf16 matmul, conv2d,
+# and bf16 SDPA correctness checks on the Radeon 8060S. If a future nightly
+# regresses, fall back to the last known-good per-arch pin:
 #   --index-url https://rocm.nightlies.amd.com/v2/gfx1151 --pre torch torchaudio torchvision
 RUN python -m pip install \
     --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
