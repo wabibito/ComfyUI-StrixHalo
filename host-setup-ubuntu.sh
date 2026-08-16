@@ -45,10 +45,18 @@ fi
 # 1. Install packages
 #    - podman          : rootless container runtime (distrobox backend)
 #    - distrobox       : runs the locally-built image as an integrated container
-#    - uidmap, slirp4netns, fuse-overlayfs : rootless podman plumbing
+#    - uidmap, fuse-overlayfs : rootless podman plumbing
+#    - passt           : provides `pasta`, the DEFAULT rootless network backend
+#                        for podman >= 5. Ubuntu only *recommends* it from the
+#                        podman package, and we install with
+#                        --no-install-recommends, so without listing it here
+#                        every build dies at the first RUN with
+#                        "could not find pasta, the network namespace can't be
+#                        configured".
+#    - slirp4netns     : legacy rootless network backend, kept as a fallback
 #    - curl, ca-certificates : misc
 # ----------------------------------------------------------------------------
-PKGS=(podman distrobox uidmap slirp4netns fuse-overlayfs curl ca-certificates)
+PKGS=(podman distrobox uidmap passt slirp4netns fuse-overlayfs curl ca-certificates)
 
 log "Installing host packages: ${PKGS[*]}"
 sudo apt-get update -y
@@ -104,7 +112,32 @@ for grp in render video; do
 done
 
 # ----------------------------------------------------------------------------
-# 4. Verify the GPU is visible to the host kernel.
+# 4. Verify rootless podman networking works.
+#    podman >= 5 defaults to `pasta` (from the passt package). If the binary is
+#    missing, podman does not fall back — every `podman build`/`run` fails at
+#    the first network-using step with "could not find pasta". Catch it here
+#    instead of ~40 build layers in.
+# ----------------------------------------------------------------------------
+if have podman; then
+    net_cmd="$(podman info --format '{{.Host.RootlessNetworkCmd}}' 2>/dev/null || true)"
+    log "Rootless network backend: ${net_cmd:-unknown}"
+    if [[ "$net_cmd" == "pasta" ]] && ! have pasta; then
+        warn "podman is configured to use 'pasta' but the binary is missing."
+        warn "Install it with:  sudo apt-get install -y passt"
+        warn "Or force the legacy backend for your user with:"
+        warn "  mkdir -p ~/.config/containers && \\"
+        warn "    printf '[network]\\ndefault_rootless_network_cmd = \"slirp4netns\"\\n' \\"
+        warn "    > ~/.config/containers/containers.conf"
+    elif [[ "$net_cmd" == "slirp4netns" ]] && ! have slirp4netns; then
+        warn "podman is configured to use 'slirp4netns' but the binary is missing."
+        warn "Install it with:  sudo apt-get install -y slirp4netns"
+    else
+        log "Rootless network backend binary present."
+    fi
+fi
+
+# ----------------------------------------------------------------------------
+# 5. Verify the GPU is visible to the host kernel.
 # ----------------------------------------------------------------------------
 log "Checking for AMD GPU devices..."
 if [[ -e /dev/kfd ]]; then
