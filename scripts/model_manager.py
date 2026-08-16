@@ -9,7 +9,11 @@ from pathlib import Path
 # --- Configuration ---
 # Hardcoded paths for Docker environment
 SCRIPT_DIR = Path("/opt")
-WORKFLOW_DIR = Path("/opt/comfy-workflows")
+# Baked-in API workflows, plus anything the user saved from the ComfyUI web UI.
+WORKFLOW_DIRS = (
+    Path("/opt/comfy-workflows"),
+    Path("/opt/ComfyUI/user/default/workflows"),
+)
 
 # --- Model Families Configuration ---
 # Group workflows by "Functionality". 
@@ -197,14 +201,20 @@ def find_available_families():
     Scans workflow directory and identifies which Model Families are relevant 
     (i.e., we have workflows for them).
     """
-    if not WORKFLOW_DIR.exists():
-        run_dialog(["--msgbox", f"Error: Workflow directory not found at:\n{WORKFLOW_DIR}", "12", "60"])
+    workflow_dirs = [directory for directory in WORKFLOW_DIRS if directory.exists()]
+    if not workflow_dirs:
+        paths = "\n".join(str(directory) for directory in WORKFLOW_DIRS)
+        run_dialog(["--msgbox", f"Error: Workflow directories not found:\n{paths}", "12", "60"])
         sys.exit(1)
 
     available_families = []
-    
+
     # Get all json filenames once
-    workflow_files = [f.name for f in WORKFLOW_DIR.glob("*.json")]
+    workflow_files = [
+        workflow.name
+        for directory in workflow_dirs
+        for workflow in directory.glob("*.json")
+    ]
     
     for family in MODEL_FAMILIES:
         # Check if ANY workflow matches this family's criteria

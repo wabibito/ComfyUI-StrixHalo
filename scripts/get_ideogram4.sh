@@ -42,7 +42,7 @@ dl() {
   if [[ -f "$dest" ]]; then echo "✓ Already present: $dest"; return; fi
   echo "↓ Downloading $(basename "$remote") → $dest"
   mkdir -p "$(dirname "$staged")"
-  "$HF" download "$REPO" "$remote" --repo-type model --cache-dir "$HF_HOME" --local-dir "$STAGE"
+  "$HF" download "$REPO" "$remote" --repo-type model --local-dir "$STAGE"
   mv -f "$staged" "$dest"
 }
 

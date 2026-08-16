@@ -29,7 +29,6 @@ dl() {
   mkdir -p "$(dirname "$staged")"
   "$HF" download "$repo" "$remote" \
       --repo-type model \
-      --cache-dir "$HF_HOME" \
       --local-dir "$STAGE"
   mv -f "$staged" "$dest"
 }

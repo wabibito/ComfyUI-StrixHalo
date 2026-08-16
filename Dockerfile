@@ -107,12 +107,16 @@ COPY scripts/start_comfy_ui /opt/venv/bin/start_comfy_ui
 RUN printf '#!/usr/bin/env bash\nexec python /opt/model_manager.py "$@"\n' > /opt/venv/bin/model_manager \
     && chmod 0755 /opt/venv/bin/start_comfy_ui /opt/venv/bin/model_manager
 
-# Permissions & trims (keep compilers/headers)
+# Permissions & trims (keep compilers/headers and installed shared libraries intact).
+# Do NOT strip *.so here: TheRock's ROCm libraries ship with symbols the runtime
+# loader needs, and stripping them yields an image where importing torch fails.
 RUN chmod -R a+rwX /opt && chmod +x /opt/*.sh || true && \
-    find /opt/venv -type f -name "*.so" -exec strip -s {} + 2>/dev/null || true && \
     find /opt/venv -type d -name "__pycache__" -prune -exec rm -rf {} + && \
     python -m pip cache purge || true && rm -rf /root/.cache/pip || true && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Catch incompatible or damaged PyTorch shared libraries before publishing an image.
+RUN python -c 'import torch; print(torch.__version__)'
 
 # Enable torch TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL
 COPY scripts/01-rocm-envs.sh /etc/profile.d/01-rocm-envs.sh
