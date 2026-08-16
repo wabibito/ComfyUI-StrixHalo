@@ -35,15 +35,37 @@ step "Checking GPU devices"
     || die "/dev/kfd or /dev/dri/renderD* missing. Is this a Strix Halo with the amdgpu driver loaded? (lsmod | grep amdgpu)"
 ok "/dev/kfd and /dev/dri present"
 
-# --- 1. podman + distrobox ---------------------------------------------------
-if ! command -v podman >/dev/null || ! command -v distrobox >/dev/null; then
-    step "Installing podman + distrobox (host setup)"
+# --- 1. host prerequisites ---------------------------------------------------
+# Check everything host-setup provides, not just that podman/distrobox exist.
+# Gating on those two alone meant a host set up by an older revision of this
+# script never picked up newly-required packages: podman was present, so setup
+# was skipped, and the build then died ~40 layers in on a missing dependency.
+# host-setup-ubuntu.sh is idempotent, so re-running it to fill a gap is cheap.
+host_deps_ok() {
+    command -v podman    >/dev/null || return 1
+    command -v distrobox >/dev/null || return 1
+
+    # podman >= 5 defaults to `pasta` (package: passt) and does NOT fall back to
+    # slirp4netns when the binary is absent — every build/run fails at the first
+    # networked step. Verify whichever backend podman is actually configured for.
+    local net_cmd
+    net_cmd="$(podman info --format '{{.Host.RootlessNetworkCmd}}' 2>/dev/null || true)"
+    case "$net_cmd" in
+        pasta)       command -v pasta       >/dev/null || return 1 ;;
+        slirp4netns) command -v slirp4netns >/dev/null || return 1 ;;
+    esac
+    return 0
+}
+
+if ! host_deps_ok; then
+    step "Installing host prerequisites (podman, distrobox, rootless networking)"
     ./host-setup-ubuntu.sh
-    note "Host setup done. LOG OUT and back in (or reboot) so group changes apply,"
-    note "then run ./install.sh again to continue."
+    note "Host setup done. If it added you to the render/video groups, LOG OUT and"
+    note "back in (or reboot) so they apply."
+    note "Then run ./install.sh again to continue."
     exit 0
 fi
-ok "podman + distrobox present"
+ok "podman + distrobox + rootless networking present"
 
 # --- 2. kernel unified-memory (GTT) params ----------------------------------
 if ! grep -q 'amdgpu.gttsize=' /proc/cmdline; then
