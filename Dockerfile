@@ -7,12 +7,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Base packages (keep compilers/headers for Triton JIT at runtime).
 #
-# NOTE on Python: TheRock's gfx1151 ROCm/PyTorch wheels target the CPython 3.13
-# ABI (verified against the gfx1151 nightly index: torch 2.10.0 cp313 wheels are
-# published). Ubuntu 26.04's *default* python3 is 3.14, which has no matching
-# torch wheel — and ComfyUI itself recommends 3.13 ("very well supported"). So we
-# install 3.13 from the deadsnakes PPA and build the venv from it. Do NOT switch
-# this to the system python3 or the torch install below will fail to resolve.
+# NOTE on Python: we pin CPython 3.13. TheRock's multi-arch index publishes
+# cp313 linux wheels for the full torch stack (verified: torch/torchvision/
+# torchaudio + the gfx1151 device packages all ship cp313-linux_x86_64), and
+# ComfyUI itself recommends 3.13 ("very well supported"). Ubuntu 26.04's
+# *default* python3 is 3.14 — matching wheels for it are not consistently
+# published, so we install 3.13 from the deadsnakes PPA and build the venv
+# from it. Do NOT switch this to the system python3 or the torch install
+# below may fail to resolve.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common ca-certificates gnupg curl \
     && add-apt-repository -y ppa:deadsnakes/ppa \
@@ -37,21 +39,24 @@ RUN python -m pip install --upgrade pip setuptools wheel
 # permissions step), so editing a script does not invalidate the expensive
 # ROCm/PyTorch/ComfyUI/studio layers — script tweaks then rebuild in seconds.
 
-# ROCm + PyTorch (TheRock, include torchaudio for resolver; remove later).
-# Use the v2 (stable nightly) index, NOT v2-staging: on this hardware the
-# v2-staging ROCm 7.14 build segfaults in ROCr agent enumeration
-# (torch.cuda.is_available() / rocminfo crash), while the v2 ROCm 7.13 builds
-# run correctly on the gfx1151 iGPU (verified: torch 2.11.0+rocm7.13 runs Evo 2
-# on this exact machine). If a future v2 build regresses, pin a known-good
-# rocm7.13 wheel here.
+# ROCm + PyTorch (TheRock multi-arch release, scoped to Strix Halo gfx1151).
+# This is the only TheRock channel still receiving builds: the per-arch
+# v2/gfx1151 (ROCm 7.13) and v2-staging/gfx1151 (ROCm 7.14) indexes are frozen.
+# The 7.14 staging build segfaulted in ROCr agent enumeration on this iGPU
+# (torch.cuda.is_available() / rocminfo crash); multi-arch is a later stack
+# (ROCm 10.x) with gfx1151 support supplied by the [device-gfx1151] extras.
+# NOT yet hardware-validated on this machine — if it regresses like 7.14 did,
+# fall back to the last known-good per-arch pin:
+#   --index-url https://rocm.nightlies.amd.com/v2/gfx1151 --pre torch torchaudio torchvision
 RUN python -m pip install \
-    --index-url https://rocm.nightlies.amd.com/v2/gfx1151 \
-    --pre torch torchaudio torchvision
+    --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
+    --pre "torch[device-gfx1151]" "torchvision[device-gfx1151]" torchaudio
 
 WORKDIR /opt
 
-# Pin specific transformers version
-RUN python -m pip install gguf transformers==4.56.2
+# Required by ComfyUI-GGUF. (transformers pin dropped with the multi-arch
+# migration, matching upstream — the pinned 4.56.2 predates this torch stack.)
+RUN python -m pip install gguf
 
 # ComfyUI — copied from our vendored source (see vendor.sh / vendor/), not cloned
 # at build time, so the image is built entirely from sources we own.

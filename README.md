@@ -109,27 +109,35 @@ target the **3.13** ABI — and ComfyUI itself recommends 3.13 ("very well
 supported") over 3.14. So the Dockerfile installs Python **3.13 from the
 deadsnakes PPA** and builds the venv from it.
 
-> Do **not** switch the Dockerfile to the system `python3`: there's no cp314
-> torch wheel for gfx1151 and the `pip install ... torch` step will fail to
-> resolve. The gfx1151 nightly index ships cp313 wheels. If a future ROCm
-> nightly ships cp314 wheels, bump the deadsnakes package and the `python3.13`
-> references together.
+> Do **not** switch the Dockerfile to the system `python3` (3.14): the
+> multi-arch index does not consistently publish matching cp314 linux wheels
+> and the `pip install ... torch` step may fail to resolve. It ships cp313
+> wheels for the full stack. If cp314 wheels appear later, bump the deadsnakes
+> package and the `python3.13` references together.
 
-## The ROCm channel pin (important)
+## The ROCm channel (important)
 
-The Dockerfile pulls torch from the **`v2`** gfx1151 index
-(`https://rocm.nightlies.amd.com/v2/gfx1151`, ROCm **7.13**), **not** `v2-staging`.
-This was hardware-validated: on a Ryzen AI Max+ 395 (gfx1151, kernel 7.0) the
-`v2-staging` ROCm **7.14** build **segfaults in ROCr agent enumeration**
-(`torch.cuda.is_available()` and `rocminfo` crash with SIGSEGV), while the `v2`
-ROCm 7.13 build (`torch 2.11.0+rocm7.13`) runs correctly — `torch.cuda` sees the
-Radeon 8060S and ComfyUI generates. No `HSA_OVERRIDE_GFX_VERSION` is needed with
-the 7.13 build (the wheel is gfx1151-native). If a future `v2` build regresses,
-pin a known-good rocm7.13 wheel in the Dockerfile.
+The Dockerfile pulls torch from TheRock's **multi-arch** index
+(`https://rocm.nightlies.amd.com/whl-multi-arch/`, currently ROCm **10.x**),
+with gfx1151 support supplied by the `[device-gfx1151]` extras. This matches
+upstream (kyuz0/amd-strix-halo-comfyui-toolboxes) and is the only TheRock
+channel still receiving builds — the per-arch `v2/gfx1151` (ROCm 7.13) and
+`v2-staging/gfx1151` (ROCm 7.14) indexes are frozen.
 
-The full stack (ROCm/PyTorch + ComfyUI) is now **hardware-validated on gfx1151**:
-image builds, the distrobox starts with GPU passthrough, `torch.cuda.is_available()`
-is True, and ComfyUI serves on :8000 with `Device: cuda:0 Radeon 8060S Graphics`.
+History, for the record: on a Ryzen AI Max+ 395 (gfx1151, kernel 7.0) the
+`v2-staging` ROCm **7.14** build **segfaulted in ROCr agent enumeration**
+(`torch.cuda.is_available()` and `rocminfo` crashed with SIGSEGV), while the
+`v2` ROCm 7.13 build (`torch 2.11.0+rocm7.13`) ran correctly and was fully
+hardware-validated (GPU passthrough, `torch.cuda.is_available()` True, ComfyUI
+generating on `cuda:0 Radeon 8060S`). The multi-arch ROCm 10.x stack has
+**not yet been re-validated on this hardware** — if it regresses the same way,
+fall back to the last known-good per-arch pin in the Dockerfile:
+
+```dockerfile
+RUN python -m pip install \
+    --index-url https://rocm.nightlies.amd.com/v2/gfx1151 \
+    --pre torch torchaudio torchvision
+```
 
 ---
 
